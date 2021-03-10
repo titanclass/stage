@@ -4,5 +4,9 @@ version = "0.1.0"
 authors = ["huntc <huntchr@gmail.com>"]
 edition = "2018"
 
+[dependencies]
+crossbeam-channel = "0.5"
+
 [dev-dependencies]
 async-std = "1.9.0"
+executors = "0.8.0"
