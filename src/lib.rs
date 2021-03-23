@@ -1,46 +1,139 @@
-use std::{
-    sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender},
-    time::Duration,
-};
+use std::{any::Any, marker::PhantomData, sync::Arc, time::Duration};
 
+use crossbeam_channel::{unbounded, Receiver, RecvError, RecvTimeoutError, SendError, Sender};
+
+/// An actor is a computational entity that, in response to a message it receives, can concurrently:
+/// * send messages to other actors
+/// * create new actors
+/// * designate the behavior to be used for the next message it receives
+/// (from https://en.wikipedia.org/wiki/Actor_model#Fundamental_concepts)
 pub trait Actor<M> {
-    fn receive(&mut self, context: &mut ActorContext<M>, message: M);
+    /// Receive a message while being able to mutate the actor state safely and
+    /// without requiring a locking mechanism. An actor context is the meta state
+    /// that enables actor creation and the stopping of this actor.
+    fn receive(&mut self, context: &mut ActorContext<M>, message: &M);
 }
 
+/// This is the type used to represent its corresponding enum as enum variants cannot
+/// be used as types in Rust.
+pub struct SelectWithAction {
+    receiver: Receiver<Box<dyn Any + Send>>,
+    action: Box<dyn FnMut(Box<dyn Any + Send>) -> bool + Send + Sync>,
+}
+
+/// Dispatchers can be sent commands on a control channel as well as being able to
+/// dispatch messages to the actors they are responsible to execute.
+pub enum DispatcherCommand {
+    /// Tells the dispatcher to select on a receiver of messages by providing
+    /// the receiver. If selection signals activity on the receiver then
+    /// a function should be performed to process it.
+    SelectWithAction { underlying: SelectWithAction },
+
+    /// Tells the dispatcher to finish up. The thread on which the select
+    /// function is running can then be joined.
+    Stop,
+}
+/// A dispatcher composes a executor to call upon the actor's message queue, ultimately calling
+/// upon the actor's receive method.
+pub trait Dispatcher {
+    /// Select all receivers and dispatch their actions. On dispatching on action, their
+    /// selection should become ineligible so that they cannot be selected on another message until
+    /// they have completed their processing. Once complete, the action should be followed by
+    /// an enqueuing of their selection once more by calling upon the send function.
+    fn select(&self) -> Result<Box<dyn Any + Send>, RecvError>;
+
+    /// Enqueue a command to the channel being selected on.
+    fn send(&self, command: DispatcherCommand) -> Result<(), SendError<Box<dyn Any + Send>>>;
+
+    /// Stop the current dispatcher and associated executor. This call is blocking and will
+    /// return once all actors have stopped running.
+    fn stop(&self);
+}
+
+/// An actor context provides state that all actors need to be able to operate.
+/// These contexts are used mainly to obtain actor references to themselves.
 pub struct ActorContext<M> {
+    active: bool,
     pub actor_ref: ActorRef<M>,
-    actor: Box<dyn Actor<M>>,
-    receiver: Receiver<M>,
+    pub dispatcher: Arc<Box<dyn Dispatcher + Send + Sync>>,
 }
 
-impl<M> ActorContext<M> {
-    pub fn new(actor: &dyn Fn() -> Box<dyn Actor<M>>, name: &str) -> ActorContext<M> {
-        let (tx, rx) = channel::<M>();
-        let actor_ref = ActorRef { sender: tx };
-        ActorContext {
-            actor_ref: actor_ref,
-            actor: actor(),
-            receiver: rx,
-        }
-    }
-
-    pub fn spawn<M2>(
-        &mut self,
-        actor: &dyn Fn() -> Box<dyn Actor<M2>>,
-        name: &str,
-    ) -> ActorRef<M2> {
-        let (tx, rx) = channel::<M2>();
-        let actor_ref = ActorRef { sender: tx };
+impl<M: Send + Sync + 'static> ActorContext<M> {
+    /// Create a new actor context and associate it with a dispatcher.
+    pub fn new<F>(
+        actor: F,
+        _name: &str,
+        dispatcher: Arc<Box<dyn Dispatcher + Send + Sync>>,
+    ) -> ActorContext<M>
+    where
+        F: FnOnce() -> Box<dyn Actor<M> + Send + Sync>,
+    {
+        let (tx, rx) = unbounded::<Box<dyn Any + Send>>();
+        let actor_ref = ActorRef {
+            phantom_marker: PhantomData,
+            sender: tx,
+        };
         let context = ActorContext {
-            actor_ref: actor_ref.to_owned(),
-            actor: actor(),
-            receiver: rx,
-        }; // FIXME store the context so we can refer to it
-        actor_ref
+            active: true,
+            actor_ref,
+            dispatcher: dispatcher.to_owned(),
+        };
+        let mut actor = actor();
+
+        let mut dispatcher_context = context.to_owned();
+
+        let _ = dispatcher.send(DispatcherCommand::SelectWithAction {
+            underlying: SelectWithAction {
+                receiver: rx.to_owned(),
+                action: Box::new(move |message| {
+                    let mut next_message = message;
+                    loop {
+                        if dispatcher_context.active {
+                            match next_message.downcast::<M>() {
+                                Ok(boxed_m) => {
+                                    let m = *boxed_m;
+                                    actor.receive(&mut dispatcher_context, &m);
+                                }
+                                Err(_) => (), // FIXME: Is this technically an error to receive a message it can't understand?
+                            }
+                        }
+                        match rx.try_recv() {
+                            Ok(m) => next_message = m,
+                            Err(_) => break, // FIXME: revisit error handling
+                        }
+                    }
+                    dispatcher_context.active
+                }),
+            },
+        }); // TODO: revisit this - creating a context for an actor that will never receive should be ok
+
+        context
     }
 
+    /// Create a new actor as a child to this one. The child actor will receive
+    /// the same dispatcher as the current one.
+    pub fn spawn<F, M2>(&mut self, actor: F, name: &str) -> ActorRef<M2>
+    where
+        F: FnOnce() -> Box<dyn Actor<M2> + Send + Sync> + 'static,
+        M2: Send + Sync + 'static,
+    {
+        let context = ActorContext::<M2>::new(actor, name, self.dispatcher.to_owned());
+        context.actor_ref
+    }
+
+    /// Stop this actor immediately.
     pub fn stop(&mut self) {
-        unimplemented!();
+        self.active = true;
+    }
+}
+
+impl<M> Clone for ActorContext<M> {
+    fn clone(&self) -> ActorContext<M> {
+        ActorContext {
+            active: self.active,
+            actor_ref: self.actor_ref.to_owned(),
+            dispatcher: self.dispatcher.to_owned(),
+        }
     }
 }
 
@@ -50,30 +143,31 @@ impl<M> ActorContext<M> {
 /// longer exist, in which case messages will be delivered
 /// to a dead letter channel.
 pub struct ActorRef<M> {
-    sender: Sender<M>,
+    phantom_marker: PhantomData<M>,
+    sender: Sender<Box<dyn Any + Send>>,
 }
 
-impl<M> ActorRef<M> {
+impl<M: Send + 'static> ActorRef<M> {
     /// Perform an ask operation on the associated actor
     /// while passing in a function to construct a message
     /// that accepts a reply_to sender
-    pub async fn ask<M2>(
-        &self,
-        f: &dyn Fn(Sender<M>) -> M,
-        recv_timeout: Duration,
-    ) -> Result<M2, RecvTimeoutError> {
+    pub async fn ask<F, M2>(&self, _f: F, _recv_timeout: Duration) -> Result<M2, RecvTimeoutError>
+    where
+        F: FnOnce() -> M + 'static,
+    {
         unimplemented!()
     }
 
     /// Best effort send a message to the associated actor
     pub fn tell(&self, message: M) {
-        let _ = self.sender.send(message);
+        let _ = self.sender.send(Box::new(message));
     }
 }
 
 impl<M> Clone for ActorRef<M> {
     fn clone(&self) -> ActorRef<M> {
         ActorRef {
+            phantom_marker: PhantomData,
             sender: self.sender.clone(),
         }
     }
@@ -81,13 +175,116 @@ impl<M> Clone for ActorRef<M> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc::channel, thread};
+    use std::thread;
+
+    use crossbeam_channel::Select;
+
+    use executors::crossbeam_workstealing_pool;
+    use executors::*;
 
     use super::*;
 
     #[test]
     fn test_greeting() {
         // Re-creates https://doc.akka.io/docs/akka/current/typed/actors.html#first-example
+
+        // We must first creator an executor along with a dispatcher so our actors can schedule
+        // their execution.
+        // NOTE - virtually all of this dispatcher implementation will became available as part of
+        // the library. It is laid out here so I can begin to understand its API so that we can
+        // run with any executor library.
+
+        struct PoolDispatcher {
+            pool: crossbeam_workstealing_pool::ThreadPool<
+                parker::StaticParker<parker::SmallThreadData>,
+            >,
+            rx: Receiver<Box<dyn Any + Send>>,
+            tx: Sender<Box<dyn Any + Send>>,
+        }
+
+        impl Dispatcher for PoolDispatcher {
+            fn select(&self) -> Result<Box<dyn Any + Send>, RecvError> {
+                let mut select_commands: Vec<Box<SelectWithAction>> = vec![];
+                loop {
+                    let mut sel = Select::new();
+                    sel.recv(&self.rx); // The first one added is always our control channel for receiving commands
+                    select_commands.iter().for_each(|command| {
+                        sel.recv(&command.receiver);
+                    });
+                    let oper = sel.select();
+
+                    let index = oper.index();
+                    let receiver = match index {
+                        0 => &self.rx,
+                        _ => &select_commands[index - 1].receiver,
+                    };
+                    let res = oper.recv(receiver);
+
+                    if index > 0 {
+                        // Handle a message destined for an actor - this is the common case.
+                        let mut current_select_command = select_commands.swap_remove(index - 1);
+                        match res {
+                            Ok(message) => {
+                                let tx = self.tx.to_owned();
+                                self.pool.execute(move || {
+                                    if (current_select_command.action)(message) {
+                                        let _ = tx.send(current_select_command);
+                                    }
+                                });
+                            }
+                            Err(_) => (), // FIXME: This is ok? the actor has died...?
+                        }
+                    } else {
+                        // Dispatcher message handling is prioritised to process SelectWithAction as we will
+                        // receive these ones mostly.
+                        match res {
+                            Ok(message) => match message.downcast::<SelectWithAction>() {
+                                Ok(select_with_action) => select_commands.push(select_with_action),
+                                Err(other_message_type) => {
+                                    match other_message_type.downcast::<DispatcherCommand>() {
+                                        Ok(dispatcher_command) => match *dispatcher_command {
+                                            DispatcherCommand::SelectWithAction { underlying } => {
+                                                select_commands.push(Box::new(underlying));
+                                            }
+                                            DispatcherCommand::Stop => {
+                                                self.pool.shutdown_async();
+                                                return Ok(Box::new(DispatcherCommand::Stop));
+                                            }
+                                        },
+                                        Err(_) => (), // FIXME Log that we've receive a message we cannot understand - quite possible given Any
+                                    }
+                                }
+                            },
+                            Err(_) => {
+                                return res;
+                            }
+                        }
+                    }
+                }
+            }
+
+            fn send(
+                &self,
+                command: DispatcherCommand,
+            ) -> Result<(), SendError<Box<dyn Any + Send>>> {
+                self.tx.send(Box::new(command))
+            }
+
+            fn stop(&self) {
+                let _ = self.send(DispatcherCommand::Stop);
+            }
+        }
+
+        let dispatcher_pool = crossbeam_workstealing_pool::small_pool(4);
+        let (dispatcher_tx, dispatcher_rx) = unbounded::<Box<dyn Any + Send>>();
+        let dispatcher: Arc<Box<dyn Dispatcher + Send + Sync>> =
+            Arc::new(Box::new(PoolDispatcher {
+                pool: dispatcher_pool,
+                rx: dispatcher_rx,
+                tx: dispatcher_tx,
+            }));
+
+        // From here on in, pretty much regular user code.
 
         // The messages
 
@@ -110,10 +307,10 @@ mod tests {
         struct HelloWorld {}
 
         impl Actor<Greet> for HelloWorld {
-            fn receive(&mut self, context: &mut ActorContext<Greet>, message: Greet) {
+            fn receive(&mut self, context: &mut ActorContext<Greet>, message: &Greet) {
                 println!("Hello {}!", message.whom);
                 message.reply_to.tell(Greeted {
-                    whom: message.whom,
+                    whom: message.whom.to_owned(),
                     from: context.actor_ref.to_owned(),
                 });
             }
@@ -127,14 +324,14 @@ mod tests {
         }
 
         impl Actor<Greeted> for HelloWorldBot {
-            fn receive(&mut self, context: &mut ActorContext<Greeted>, message: Greeted) {
+            fn receive(&mut self, context: &mut ActorContext<Greeted>, message: &Greeted) {
                 let n = self.greeting_counter + 1;
                 println!("Greeting {} for {}", n, message.whom);
                 if n == self.max {
                     context.stop();
                 } else {
                     message.from.tell(Greet {
-                        whom: message.whom,
+                        whom: message.whom.to_owned(),
                         reply_to: context.actor_ref.to_owned(),
                     });
                     self.greeting_counter = n;
@@ -149,10 +346,10 @@ mod tests {
         }
 
         impl Actor<SayHello> for HelloWorldMain {
-            fn receive(&mut self, context: &mut ActorContext<SayHello>, message: SayHello) {
+            fn receive(&mut self, context: &mut ActorContext<SayHello>, message: &SayHello) {
                 let greeter = match &self.greeter {
                     None => {
-                        let greeter = context.spawn(&|| Box::new(HelloWorld {}), "greeter");
+                        let greeter = context.spawn(|| Box::new(HelloWorld {}), "greeter");
                         self.greeter = Some(greeter.to_owned());
                         greeter
                     }
@@ -160,7 +357,7 @@ mod tests {
                 };
 
                 let reply_to = context.spawn(
-                    &|| {
+                    || {
                         Box::new(HelloWorldBot {
                             greeting_counter: 0,
                             max: 3,
@@ -169,14 +366,20 @@ mod tests {
                     &message.name,
                 );
                 greeter.tell(Greet {
-                    whom: message.name,
+                    whom: message.name.to_owned(),
                     reply_to,
                 });
             }
         }
 
-        let system =
-            ActorContext::<SayHello>::new(&|| Box::new(HelloWorldMain { greeter: None }), "hello");
+        // Create a root context, which is essentiallly the actor system. We
+        // also send a couple of messages for our demo.
+
+        let system = ActorContext::<SayHello>::new(
+            || Box::new(HelloWorldMain { greeter: None }),
+            "hello",
+            dispatcher.to_owned(),
+        );
 
         system.actor_ref.tell(SayHello {
             name: "World".to_string(),
@@ -186,28 +389,17 @@ mod tests {
             name: "Stage".to_string(),
         });
 
-        // // Create a channel for communication
-        // let (tx, rx) = channel::<(u64, Greet)>();
+        // Run the dispatcher select function on its own thread. We wait
+        // for the select function to finish, which will be when will
+        // tell the "system" (the actor context above) to stop, it is stops
+        // itself.
+        let select_thread_dispatcher = dispatcher.to_owned();
+        let select_thread = thread::spawn(move || select_thread_dispatcher.select());
 
-        // // Create the actor
-        // let hello_world = HelloWorld {
-        //     context: ActorContext { actor_ref: ActorRef { id: 1, sender: tx } },
-        // };
+        thread::sleep(Duration::from_millis(500));
 
-        // // Start the dispatch for the actor
-        // thread::spawn(move || {
-        //     while let Ok((id, message)) = rx.recv() {
-        //         match id {
-        //             1 => hello_world.receive(message),
-        //             _ => (),
-        //         };
-        //     }
-        // });
+        dispatcher.stop();
 
-        // // Construct a reference to the actor
-        // let root = ActorRef { id: 1, sender: tx };
-
-        // // Send a message to the actor
-        // root.tell(Greet { whom: "someone".to_string());
+        assert!(select_thread.join().is_ok());
     }
 }
