@@ -1,6 +1,6 @@
 use std::{any::Any, marker::PhantomData, sync::Arc, time::Duration};
 
-use crossbeam_channel::{unbounded, Receiver, RecvError, RecvTimeoutError, SendError, Sender};
+use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, SendError, Sender};
 
 /// An actor is a computational entity that, in response to a message it receives, can concurrently:
 /// * send messages to other actors
@@ -17,8 +17,8 @@ pub trait Actor<M> {
 /// This is the type used to represent its corresponding enum as enum variants cannot
 /// be used as types in Rust.
 pub struct SelectWithAction {
-    receiver: Receiver<Box<dyn Any + Send>>,
-    action: Box<dyn FnMut(Box<dyn Any + Send>) -> bool + Send + Sync>,
+    pub receiver: Receiver<Box<dyn Any + Send>>,
+    pub action: Box<dyn FnMut(Box<dyn Any + Send>) -> bool + Send + Sync>,
 }
 
 /// Dispatchers can be sent commands on a control channel as well as being able to
@@ -55,20 +55,27 @@ pub trait Dispatcher {
 pub struct ActorContext<M> {
     active: bool,
     pub actor_ref: ActorRef<M>,
-    pub dispatcher: Arc<Box<dyn Dispatcher + Send + Sync>>,
+    pub dispatcher: Arc<dyn Dispatcher + Send + Sync>,
+    pub mailbox_fn:
+        Arc<dyn Fn() -> (Sender<Box<dyn Any + Send>>, Receiver<Box<dyn Any + Send>>) + Send + Sync>,
+    pub name: Arc<String>,
 }
 
-impl<M: Send + Sync + 'static> ActorContext<M> {
+impl<M> ActorContext<M> {
     /// Create a new actor context and associate it with a dispatcher.
-    pub fn new<F>(
-        actor: F,
-        _name: &str,
-        dispatcher: Arc<Box<dyn Dispatcher + Send + Sync>>,
+    pub fn new<FA>(
+        new_actor_fn: FA,
+        name: &str,
+        dispatcher: Arc<dyn Dispatcher + Send + Sync>,
+        mailbox_fn: Arc<
+            dyn Fn() -> (Sender<Box<dyn Any + Send>>, Receiver<Box<dyn Any + Send>>) + Send + Sync,
+        >,
     ) -> ActorContext<M>
     where
-        F: FnOnce() -> Box<dyn Actor<M> + Send + Sync>,
+        FA: FnOnce() -> Box<dyn Actor<M> + Send + Sync>,
+        M: Send + Sync + 'static,
     {
-        let (tx, rx) = unbounded::<Box<dyn Any + Send>>();
+        let (tx, rx) = mailbox_fn();
         let actor_ref = ActorRef {
             phantom_marker: PhantomData,
             sender: tx,
@@ -77,8 +84,10 @@ impl<M: Send + Sync + 'static> ActorContext<M> {
             active: true,
             actor_ref,
             dispatcher: dispatcher.to_owned(),
+            mailbox_fn,
+            name: Arc::new(name.to_owned()),
         };
-        let mut actor = actor();
+        let mut actor = new_actor_fn();
 
         let mut dispatcher_context = context.to_owned();
 
@@ -112,12 +121,17 @@ impl<M: Send + Sync + 'static> ActorContext<M> {
 
     /// Create a new actor as a child to this one. The child actor will receive
     /// the same dispatcher as the current one.
-    pub fn spawn<F, M2>(&mut self, actor: F, name: &str) -> ActorRef<M2>
+    pub fn spawn<FA, M2>(&mut self, new_actor_fn: FA, name: &str) -> ActorRef<M2>
     where
-        F: FnOnce() -> Box<dyn Actor<M2> + Send + Sync> + 'static,
+        FA: FnOnce() -> Box<dyn Actor<M2> + Send + Sync>,
         M2: Send + Sync + 'static,
     {
-        let context = ActorContext::<M2>::new(actor, name, self.dispatcher.to_owned());
+        let context = ActorContext::<M2>::new(
+            new_actor_fn,
+            name,
+            self.dispatcher.to_owned(),
+            self.mailbox_fn.to_owned(),
+        );
         context.actor_ref
     }
 
@@ -133,6 +147,8 @@ impl<M> Clone for ActorContext<M> {
             active: self.active,
             actor_ref: self.actor_ref.to_owned(),
             dispatcher: self.dispatcher.to_owned(),
+            mailbox_fn: self.mailbox_fn.to_owned(),
+            name: self.name.to_owned(),
         }
     }
 }
@@ -155,7 +171,7 @@ impl<M: Send + 'static> ActorRef<M> {
     where
         F: FnOnce() -> M + 'static,
     {
-        unimplemented!()
+        unimplemented!() // FIXME
     }
 
     /// Best effort send a message to the associated actor
@@ -177,7 +193,7 @@ impl<M> Clone for ActorRef<M> {
 mod tests {
     use std::thread;
 
-    use crossbeam_channel::Select;
+    use crossbeam_channel::{unbounded, Select};
 
     use executors::crossbeam_workstealing_pool;
     use executors::*;
@@ -276,13 +292,12 @@ mod tests {
         }
 
         let dispatcher_pool = crossbeam_workstealing_pool::small_pool(4);
-        let (dispatcher_tx, dispatcher_rx) = unbounded::<Box<dyn Any + Send>>();
-        let dispatcher: Arc<Box<dyn Dispatcher + Send + Sync>> =
-            Arc::new(Box::new(PoolDispatcher {
-                pool: dispatcher_pool,
-                rx: dispatcher_rx,
-                tx: dispatcher_tx,
-            }));
+        let (dispatcher_tx, dispatcher_rx) = unbounded();
+        let dispatcher = Arc::new(PoolDispatcher {
+            pool: dispatcher_pool,
+            rx: dispatcher_rx,
+            tx: dispatcher_tx,
+        });
 
         // From here on in, pretty much regular user code.
 
@@ -379,6 +394,7 @@ mod tests {
             || Box::new(HelloWorldMain { greeter: None }),
             "hello",
             dispatcher.to_owned(),
+            Arc::new(|| unbounded()),
         );
 
         system.actor_ref.tell(SayHello {
