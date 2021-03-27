@@ -1,0 +1,14 @@
+[package]
+name = "stage_dispatch_executors"
+version = "0.1.0"
+authors = ["Titan Class P/L"]
+edition = "2018"
+
+[dependencies]
+crossbeam-channel = "0.5"
+executors = "0.8.0"
+log = "0.4"
+stage_core = { path = "../core" }
+
+[dev-dependencies]
+env_logger = "0.8.3"
