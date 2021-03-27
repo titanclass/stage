@@ -1,0 +1,12 @@
+[package]
+name = "stage_core"
+version = "0.1.0"
+authors = ["Titan Class P/L"]
+edition = "2018"
+
+[dependencies]
+crossbeam-channel = "0.5"
+log = "0.4"
+
+[dev-dependencies]
+env_logger = "0.8.3"
