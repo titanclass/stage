@@ -1,6 +1,8 @@
-use std::{any::Any, marker::PhantomData, sync::Arc, time::Duration};
+use std::{any::Any, fmt::Display, marker::PhantomData, sync::Arc, time::Duration};
 
-use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, SendError, Sender};
+use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, SendError, Sender, TryRecvError};
+
+use log::{debug, warn};
 
 /// An actor is a computational entity that, in response to a message it receives, can concurrently:
 /// * send messages to other actors
@@ -75,23 +77,25 @@ impl<M> ActorContext<M> {
         FA: FnOnce() -> Box<dyn Actor<M> + Send + Sync>,
         M: Send + Sync + 'static,
     {
+        let shared_name = Arc::new(name.to_owned());
         let (tx, rx) = mailbox_fn();
         let actor_ref = ActorRef {
+            name: shared_name.to_owned(),
             phantom_marker: PhantomData,
             sender: tx,
         };
         let context = ActorContext {
             active: true,
-            actor_ref,
+            actor_ref: actor_ref.to_owned(),
             dispatcher: dispatcher.to_owned(),
             mailbox_fn,
-            name: Arc::new(name.to_owned()),
+            name: shared_name,
         };
         let mut actor = new_actor_fn();
 
         let mut dispatcher_context = context.to_owned();
 
-        let _ = dispatcher.send(DispatcherCommand::SelectWithAction {
+        match dispatcher.send(DispatcherCommand::SelectWithAction {
             underlying: SelectWithAction {
                 receiver: rx.to_owned(),
                 action: Box::new(move |message| {
@@ -103,18 +107,32 @@ impl<M> ActorContext<M> {
                                     let m = *boxed_m;
                                     actor.receive(&mut dispatcher_context, &m);
                                 }
-                                Err(_) => (), // FIXME: Is this technically an error to receive a message it can't understand?
+                                Err(m) => warn!(
+                                    "Unexpected message in {}: type_id: {:?}",
+                                    dispatcher_context.actor_ref,
+                                    m.type_id()
+                                ),
                             }
                         }
                         match rx.try_recv() {
                             Ok(m) => next_message = m,
-                            Err(_) => break, // FIXME: revisit error handling
+                            Err(e) if e == TryRecvError::Empty => break,
+                            Err(e) => {
+                                debug!("Error received in {}: {}", dispatcher_context.actor_ref, e);
+                                break;
+                            }
                         }
                     }
                     dispatcher_context.active
                 }),
             },
-        }); // TODO: revisit this - creating a context for an actor that will never receive should be ok
+        }) {
+            Err(e) => {
+                debug!("Error received establishing {}: {}", actor_ref, e);
+                ()
+            }
+            _ => (),
+        }
 
         context
     }
@@ -159,6 +177,7 @@ impl<M> Clone for ActorContext<M> {
 /// longer exist, in which case messages will be delivered
 /// to a dead letter channel.
 pub struct ActorRef<M> {
+    name: Arc<String>,
     phantom_marker: PhantomData<M>,
     sender: Sender<Box<dyn Any + Send>>,
 }
@@ -183,9 +202,16 @@ impl<M: Send + 'static> ActorRef<M> {
 impl<M> Clone for ActorRef<M> {
     fn clone(&self) -> ActorRef<M> {
         ActorRef {
+            name: self.name.to_owned(),
             phantom_marker: PhantomData,
-            sender: self.sender.clone(),
+            sender: self.sender.to_owned(),
         }
+    }
+}
+
+impl<M> Display for ActorRef<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ActorRef({})", self.name)
     }
 }
 
@@ -200,8 +226,14 @@ mod tests {
 
     use super::*;
 
+    fn init_logging() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+
     #[test]
     fn test_greeting() {
+        init_logging();
+
         // Re-creates https://doc.akka.io/docs/akka/current/typed/actors.html#first-example
 
         // We must first creator an executor along with a dispatcher so our actors can schedule
@@ -245,10 +277,17 @@ mod tests {
                                 self.pool.execute(move || {
                                     if (current_select_command.action)(message) {
                                         let _ = tx.send(current_select_command);
+                                    } else {
+                                        debug!(
+                                            "Actor has shutdown: {:?} - treating as a dead letter",
+                                            tx
+                                        );
                                     }
                                 });
                             }
-                            Err(_) => (), // FIXME: This is ok? the actor has died...?
+                            Err(e) => {
+                                debug!("Cannot receive on an actor channel: {} - treating as a dead letter", e);
+                            }
                         }
                     } else {
                         // Dispatcher message handling is prioritised to process SelectWithAction as we will
@@ -267,7 +306,9 @@ mod tests {
                                                 return Ok(Box::new(DispatcherCommand::Stop));
                                             }
                                         },
-                                        Err(_) => (), // FIXME Log that we've receive a message we cannot understand - quite possible given Any
+                                        Err(e) => {
+                                            warn!("Error received when expecting a dispatcher command: {:?}", e)
+                                        }
                                     }
                                 }
                             },
