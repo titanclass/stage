@@ -1,11 +1,37 @@
-use std::any::Any;
+use std::{
+    any::Any,
+    ops::{Deref, DerefMut},
+};
 
-use crossbeam_channel::{Receiver, RecvError, Select, SendError, Sender};
+use crossbeam_channel::{
+    Receiver as CBReceiver, RecvError as CBRecvError, Select, SendError as CBSendError,
+    Sender as CBSender, TryRecvError as CBTryRecvError,
+};
 use executors::*;
 use executors::{crossbeam_workstealing_pool, parker::Parker};
+use stage_core::channel::{Receiver, RecvError, SendError, Sender, SenderImpl};
 
 use log::{debug, warn};
-use stage_core::{Dispatcher, DispatcherCommand, SelectWithAction};
+use stage_core::{AnyMessage, Dispatcher, DispatcherCommand, SelectWithAction};
+
+struct MySender {
+    sender: CBSender<AnyMessage>,
+}
+
+impl SenderImpl<AnyMessage> for MySender {
+    fn clone(&self) -> Box<dyn SenderImpl<AnyMessage>> {
+        Box::new(MySender {
+            sender: self.sender.to_owned(),
+        })
+    }
+
+    fn send(&self, msg: AnyMessage) -> Result<(), SendError<AnyMessage>> {
+        match self.sender.send(msg) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(SendError(e.0)),
+        }
+    }
+}
 
 /// A Dispatcher for Stage that leverages the Executors crate's work-stealing ThreadPool.
 ///
@@ -33,28 +59,38 @@ where
     P: Parker + Clone + 'static,
 {
     pub pool: crossbeam_workstealing_pool::ThreadPool<P>,
-    pub rx: Receiver<Box<dyn Any + Send>>,
-    pub tx: Sender<Box<dyn Any + Send>>,
+    pub rx: CBReceiver<AnyMessage>,
+    pub tx: CBSender<AnyMessage>,
 }
 
 impl<P> Dispatcher for WorkStealingPoolDispatcher<P>
 where
     P: Parker + Clone + 'static,
 {
-    fn select(&self) -> Result<Box<dyn Any + Send>, RecvError> {
+    fn select(&self) -> Result<AnyMessage, RecvError> {
         let mut select_commands: Vec<Box<SelectWithAction>> = vec![];
         loop {
             let mut sel = Select::new();
             sel.recv(&self.rx); // The first one added is always our control channel for receiving commands
             select_commands.iter().for_each(|command| {
-                sel.recv(&command.receiver);
+                sel.recv(
+                    command
+                        .receiver
+                        .underlying
+                        .downcast_ref::<CBReceiver<AnyMessage>>()
+                        .unwrap(),
+                );
             });
             let oper = sel.select();
 
             let index = oper.index();
             let receiver = match index {
                 0 => &self.rx,
-                _ => &select_commands[index - 1].receiver,
+                _ => &select_commands[index - 1]
+                    .receiver
+                    .underlying
+                    .downcast_ref::<CBReceiver<AnyMessage>>()
+                    .unwrap(),
             };
             let res = oper.recv(receiver);
 
@@ -65,7 +101,25 @@ where
                     Ok(message) => {
                         let tx = self.tx.to_owned();
                         self.pool.execute(move || {
-                            if (current_select_command.action)(message) {
+                            let receiver = current_select_command
+                                .receiver
+                                .underlying
+                                .downcast_ref::<CBReceiver<AnyMessage>>()
+                                .unwrap();
+                            let mut active = (current_select_command.action)(message);
+                            while active {
+                                match receiver.try_recv() {
+                                    Ok(next_message) => {
+                                        active = (current_select_command.action)(next_message)
+                                    }
+                                    Err(e) if e == CBTryRecvError::Empty => break,
+                                    Err(e) => {
+                                        debug!("Error received for actor {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                            if active {
                                 let _ = tx.send(current_select_command);
                             } else {
                                 debug!("Actor has shutdown: {:?} - treating as a dead letter", tx);
@@ -105,15 +159,15 @@ where
                         }
                     }
                     Err(_) => {
-                        return res;
+                        return Err(RecvError);
                     }
                 }
             }
         }
     }
 
-    fn send(&self, command: DispatcherCommand) -> Result<(), SendError<Box<dyn Any + Send>>> {
-        self.tx.send(Box::new(command))
+    fn send(&self, command: DispatcherCommand) -> Result<(), SendError<AnyMessage>> {
+        self.tx.send(Box::new(command)).map_err(|e| SendError(e.0))
     }
 
     fn stop(&self) {
@@ -123,12 +177,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, thread, time::Duration};
+    use std::{marker::PhantomData, sync::Arc, thread, time::Duration};
 
     use crossbeam_channel::unbounded;
 
     use executors::crossbeam_workstealing_pool;
-    use stage_core::{Actor, ActorContext, ActorRef};
+    use stage_core::{channel::SenderImpl, Actor, ActorContext, ActorRef};
 
     use super::*;
 
@@ -205,22 +259,19 @@ mod tests {
             fn receive(&mut self, context: &mut ActorContext<SayHello>, message: &SayHello) {
                 let greeter = match &self.greeter {
                     None => {
-                        let greeter = context.spawn(|| Box::new(HelloWorld {}), "greeter");
+                        let greeter = context.spawn(|| Box::new(HelloWorld {}));
                         self.greeter = Some(greeter.to_owned());
                         greeter
                     }
                     Some(greeter) => greeter.to_owned(),
                 };
 
-                let reply_to = context.spawn(
-                    || {
-                        Box::new(HelloWorldBot {
-                            greeting_counter: 0,
-                            max: 3,
-                        })
-                    },
-                    &message.name,
-                );
+                let reply_to = context.spawn(|| {
+                    Box::new(HelloWorldBot {
+                        greeting_counter: 0,
+                        max: 3,
+                    })
+                });
                 greeter.tell(Greet {
                     whom: message.name.to_owned(),
                     reply_to,
@@ -243,9 +294,23 @@ mod tests {
 
         let system = ActorContext::<SayHello>::new(
             || Box::new(HelloWorldMain { greeter: None }),
-            "hello",
             dispatcher.to_owned(),
-            Arc::new(|| unbounded()),
+            Arc::new(|| {
+                let (tx, rx) = unbounded::<AnyMessage>();
+                (
+                    Sender {
+                        phantom_marker: PhantomData,
+                        sender_impl: Arc::new(MySender {
+                            sender: tx.to_owned(),
+                        }),
+                        underlying: Arc::new(tx),
+                    },
+                    Receiver {
+                        phantom_marker: PhantomData,
+                        underlying: Box::new(rx),
+                    },
+                )
+            }),
         );
 
         system.actor_ref.tell(SayHello {

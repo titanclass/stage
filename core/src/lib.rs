@@ -1,8 +1,18 @@
-use std::{any::Any, fmt::Display, marker::PhantomData, sync::Arc, time::Duration};
+#![cfg_attr(not(test), no_std)]
 
-use crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, SendError, Sender, TryRecvError};
+use core::{any::Any, fmt::Debug, marker::PhantomData, time::Duration};
+
+extern crate alloc;
+use crate::alloc::borrow::ToOwned;
+use crate::alloc::{boxed::Box, sync::Arc};
+
+pub mod channel;
+use channel::{Receiver, RecvError, RecvTimeoutError, SendError, Sender};
 
 use log::{debug, warn};
+
+/// Any message that can be sent and received by an actor. Used within dispatchers.
+pub type AnyMessage = Box<dyn Any + Send>;
 
 /// An actor is a computational entity that, in response to a message it receives, can concurrently:
 /// * send messages to other actors
@@ -19,8 +29,8 @@ pub trait Actor<M> {
 /// This is the type used to represent its corresponding enum as enum variants cannot
 /// be used as types in Rust.
 pub struct SelectWithAction {
-    pub receiver: Receiver<Box<dyn Any + Send>>,
-    pub action: Box<dyn FnMut(Box<dyn Any + Send>) -> bool + Send + Sync>,
+    pub receiver: Receiver<AnyMessage>,
+    pub action: Box<dyn FnMut(AnyMessage) -> bool + Send + Sync>,
 }
 
 /// Dispatchers can be sent commands on a control channel as well as being able to
@@ -35,6 +45,7 @@ pub enum DispatcherCommand {
     /// function is running can then be joined.
     Stop,
 }
+
 /// A dispatcher composes a executor to call upon the actor's message queue, ultimately calling
 /// upon the actor's receive method.
 pub trait Dispatcher {
@@ -42,10 +53,10 @@ pub trait Dispatcher {
     /// selection should become ineligible so that they cannot be selected on another message until
     /// they have completed their processing. Once complete, the action should be followed by
     /// an enqueuing of their selection once more by calling upon the send function.
-    fn select(&self) -> Result<Box<dyn Any + Send>, RecvError>;
+    fn select(&self) -> Result<AnyMessage, RecvError>;
 
     /// Enqueue a command to the channel being selected on.
-    fn send(&self, command: DispatcherCommand) -> Result<(), SendError<Box<dyn Any + Send>>>;
+    fn send(&self, command: DispatcherCommand) -> Result<(), SendError<AnyMessage>>;
 
     /// Stop the current dispatcher and associated executor. This call is blocking and will
     /// return once all actors have stopped running.
@@ -58,29 +69,22 @@ pub struct ActorContext<M> {
     active: bool,
     pub actor_ref: ActorRef<M>,
     pub dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-    pub mailbox_fn:
-        Arc<dyn Fn() -> (Sender<Box<dyn Any + Send>>, Receiver<Box<dyn Any + Send>>) + Send + Sync>,
-    pub name: Arc<String>,
+    pub mailbox_fn: Arc<dyn Fn() -> (Sender<AnyMessage>, Receiver<AnyMessage>) + Send + Sync>,
 }
 
 impl<M> ActorContext<M> {
     /// Create a new actor context and associate it with a dispatcher.
     pub fn new<FA>(
         new_actor_fn: FA,
-        name: &str,
         dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-        mailbox_fn: Arc<
-            dyn Fn() -> (Sender<Box<dyn Any + Send>>, Receiver<Box<dyn Any + Send>>) + Send + Sync,
-        >,
+        mailbox_fn: Arc<dyn Fn() -> (Sender<AnyMessage>, Receiver<AnyMessage>) + Send + Sync>,
     ) -> ActorContext<M>
     where
         FA: FnOnce() -> Box<dyn Actor<M> + Send + Sync>,
         M: Send + Sync + 'static,
     {
-        let shared_name = Arc::new(name.to_owned());
         let (tx, rx) = mailbox_fn();
         let actor_ref = ActorRef {
-            name: shared_name.to_owned(),
             phantom_marker: PhantomData,
             sender: tx,
         };
@@ -89,7 +93,6 @@ impl<M> ActorContext<M> {
             actor_ref: actor_ref.to_owned(),
             dispatcher: dispatcher.to_owned(),
             mailbox_fn,
-            name: shared_name,
         };
         let mut actor = new_actor_fn();
 
@@ -97,30 +100,19 @@ impl<M> ActorContext<M> {
 
         match dispatcher.send(DispatcherCommand::SelectWithAction {
             underlying: SelectWithAction {
-                receiver: rx.to_owned(),
+                receiver: rx,
                 action: Box::new(move |message| {
-                    let mut next_message = message;
-                    loop {
-                        if dispatcher_context.active {
-                            match next_message.downcast::<M>() {
-                                Ok(boxed_m) => {
-                                    let m = *boxed_m;
-                                    actor.receive(&mut dispatcher_context, &m);
-                                }
-                                Err(m) => warn!(
-                                    "Unexpected message in {}: type_id: {:?}",
-                                    dispatcher_context.actor_ref,
-                                    m.type_id()
-                                ),
+                    if dispatcher_context.active {
+                        match message.downcast::<M>() {
+                            Ok(boxed_m) => {
+                                let m = *boxed_m;
+                                actor.receive(&mut dispatcher_context, &m);
                             }
-                        }
-                        match rx.try_recv() {
-                            Ok(m) => next_message = m,
-                            Err(e) if e == TryRecvError::Empty => break,
-                            Err(e) => {
-                                debug!("Error received in {}: {}", dispatcher_context.actor_ref, e);
-                                break;
-                            }
+                            Err(m) => warn!(
+                                "Unexpected message in {:?}: type_id: {:?}",
+                                dispatcher_context.actor_ref,
+                                m.type_id()
+                            ),
                         }
                     }
                     dispatcher_context.active
@@ -128,7 +120,7 @@ impl<M> ActorContext<M> {
             },
         }) {
             Err(e) => {
-                debug!("Error received establishing {}: {}", actor_ref, e);
+                debug!("Error received establishing {:?}: {}", actor_ref, e);
                 ()
             }
             _ => (),
@@ -139,14 +131,13 @@ impl<M> ActorContext<M> {
 
     /// Create a new actor as a child to this one. The child actor will receive
     /// the same dispatcher as the current one.
-    pub fn spawn<FA, M2>(&mut self, new_actor_fn: FA, name: &str) -> ActorRef<M2>
+    pub fn spawn<FA, M2>(&mut self, new_actor_fn: FA) -> ActorRef<M2>
     where
         FA: FnOnce() -> Box<dyn Actor<M2> + Send + Sync>,
         M2: Send + Sync + 'static,
     {
         let context = ActorContext::<M2>::new(
             new_actor_fn,
-            name,
             self.dispatcher.to_owned(),
             self.mailbox_fn.to_owned(),
         );
@@ -166,7 +157,6 @@ impl<M> Clone for ActorContext<M> {
             actor_ref: self.actor_ref.to_owned(),
             dispatcher: self.dispatcher.to_owned(),
             mailbox_fn: self.mailbox_fn.to_owned(),
-            name: self.name.to_owned(),
         }
     }
 }
@@ -177,9 +167,8 @@ impl<M> Clone for ActorContext<M> {
 /// longer exist, in which case messages will be delivered
 /// to a dead letter channel.
 pub struct ActorRef<M> {
-    name: Arc<String>,
     phantom_marker: PhantomData<M>,
-    sender: Sender<Box<dyn Any + Send>>,
+    sender: Sender<AnyMessage>,
 }
 
 impl<M: Send + 'static> ActorRef<M> {
@@ -202,16 +191,15 @@ impl<M: Send + 'static> ActorRef<M> {
 impl<M> Clone for ActorRef<M> {
     fn clone(&self) -> ActorRef<M> {
         ActorRef {
-            name: self.name.to_owned(),
             phantom_marker: PhantomData,
             sender: self.sender.to_owned(),
         }
     }
 }
 
-impl<M> Display for ActorRef<M> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ActorRef({})", self.name)
+impl<M> Debug for ActorRef<M> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.sender.fmt(f)
     }
 }
 
