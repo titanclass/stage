@@ -51,7 +51,6 @@ pub trait SenderImpl<T> {
 pub struct Sender<T> {
     pub phantom_marker: PhantomData<T>,
     pub sender_impl: Arc<dyn SenderImpl<T>>,
-    pub underlying: Arc<dyn Any>,
 }
 
 unsafe impl<T: Send> Send for Sender<T> {}
@@ -76,7 +75,6 @@ impl<T> Clone for Sender<T> {
         Sender {
             phantom_marker: PhantomData,
             sender_impl: self.sender_impl.clone(),
-            underlying: self.underlying.clone(),
         }
     }
 }

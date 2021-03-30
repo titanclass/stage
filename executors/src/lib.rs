@@ -303,7 +303,6 @@ mod tests {
                         sender_impl: Arc::new(MySender {
                             sender: tx.to_owned(),
                         }),
-                        underlying: Arc::new(tx),
                     },
                     Receiver {
                         phantom_marker: PhantomData,
