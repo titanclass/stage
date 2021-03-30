@@ -1,17 +1,29 @@
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use core::any::Any;
 use core::fmt;
-use core::marker::PhantomData;
+
+/// Provides an abstraction over any type of channel so that the core actor library
+/// can function.
 
 /// The receiving side of a channel.
 pub struct Receiver<T> {
-    pub phantom_marker: PhantomData<T>,
-    pub underlying: Box<dyn Any>,
+    pub receiver_impl: Box<dyn ReceiverImpl<T>>,
 }
 
 unsafe impl<T: Send> Send for Receiver<T> {}
 unsafe impl<T: Send> Sync for Receiver<T> {}
+
+impl<T> fmt::Debug for Receiver<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad("Receiver { .. }")
+    }
+}
+
+/// Required to be implemented by the provider of a channel
+pub trait ReceiverImpl<T> {
+    /// Return self as an Any so that it can be downcast
+    fn as_any(&self) -> &dyn Any;
+}
 
 /// An error returned from the [`recv`] method.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -19,7 +31,7 @@ pub struct RecvError;
 
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        "receiving on an empty and disconnected channel".fmt(f)
     }
 }
 
@@ -38,42 +50,37 @@ pub enum RecvTimeoutError {
 
 impl fmt::Display for RecvTimeoutError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        match *self {
+            RecvTimeoutError::Timeout => "timed out waiting on receive operation".fmt(f),
+            RecvTimeoutError::Disconnected => "channel is empty and disconnected".fmt(f),
+        }
     }
-}
-
-pub trait SenderImpl<T> {
-    fn clone(&self) -> Box<dyn SenderImpl<T>>;
-    fn send(&self, msg: T) -> Result<(), SendError<T>>;
 }
 
 /// The sending side of a channel.
 pub struct Sender<T> {
-    pub phantom_marker: PhantomData<T>,
-    pub sender_impl: Arc<dyn SenderImpl<T>>,
+    pub sender_impl: Box<dyn SenderImpl<T>>,
 }
 
 unsafe impl<T: Send> Send for Sender<T> {}
 unsafe impl<T: Send> Sync for Sender<T> {}
 
 impl<T> Sender<T> {
-    /// Blocks the current thread until a message is sent or the channel is disconnected.
+    /// Attempts to send a message into the channel without blocking.
     ///
-    /// If the channel is full and not disconnected, this call will block until the send operation
-    /// can proceed. If the channel becomes disconnected, this call will wake up and return an
-    /// error. The returned error contains the original message.
+    /// This method will either send a message into the channel immediately or return an error if
+    /// the channel is full or disconnected. The returned error contains the original message.
     ///
-    /// If called on a zero-capacity channel, this method will wait for a receive operation to
-    /// appear on the other side of the channel.
-    pub fn send(&self, msg: T) -> Result<(), SendError<T>> {
-        self.sender_impl.send(msg)
+    /// If called on a zero-capacity channel, this method will send the message only if there
+    /// happens to be a receive operation on the other side of the channel at the same time.
+    pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
+        self.sender_impl.try_send(msg)
     }
 }
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
         Sender {
-            phantom_marker: PhantomData,
             sender_impl: self.sender_impl.clone(),
         }
     }
@@ -81,21 +88,41 @@ impl<T> Clone for Sender<T> {
 
 impl<T> fmt::Debug for Sender<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        f.pad("Sender { .. }")
     }
 }
 
-/// An error returned from the [`send`] method.
-///
-/// The message could not be sent because the channel is disconnected.
-///
-/// The error contains the message so it can be recovered.
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub struct SendError<T>(pub T);
+/// Required to be implemented by the provider of a channel
+pub trait SenderImpl<T> {
+    // Provide a cloning function
+    fn clone(&self) -> Box<dyn SenderImpl<T>>;
+    // Provide a try_send function
+    fn try_send(&self, msg: T) -> Result<(), TrySendError<T>>;
+}
 
-impl<T> fmt::Display for SendError<T> {
+/// An error returned from the [`try_send`] method.
+///
+/// The error contains the message being sent so it can be recovered.
+///
+/// [`try_send`]: super::Sender::try_send
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum TrySendError<T> {
+    /// The message could not be sent because the channel is full.
+    ///
+    /// If this is a zero-capacity channel, then the error indicates that there was no receiver
+    /// available to receive the message at the time.
+    Full(T),
+
+    /// The message could not be sent because the channel is disconnected.
+    Disconnected(T),
+}
+
+impl<T> fmt::Display for TrySendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        match *self {
+            TrySendError::Full(..) => "sending on a full channel".fmt(f),
+            TrySendError::Disconnected(..) => "sending on a disconnected channel".fmt(f),
+        }
     }
 }
 
@@ -116,6 +143,9 @@ pub enum TryRecvError {
 
 impl fmt::Display for TryRecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        match *self {
+            TryRecvError::Empty => "receiving on an empty channel".fmt(f),
+            TryRecvError::Disconnected => "receiving on an empty and disconnected channel".fmt(f),
+        }
     }
 }

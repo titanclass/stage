@@ -7,7 +7,7 @@ use crate::alloc::borrow::ToOwned;
 use crate::alloc::{boxed::Box, sync::Arc};
 
 pub mod channel;
-use channel::{Receiver, RecvError, RecvTimeoutError, SendError, Sender};
+use channel::{Receiver, RecvError, RecvTimeoutError, Sender, TrySendError};
 
 use log::{debug, warn};
 
@@ -56,7 +56,7 @@ pub trait Dispatcher {
     fn select(&self) -> Result<AnyMessage, RecvError>;
 
     /// Enqueue a command to the channel being selected on.
-    fn send(&self, command: DispatcherCommand) -> Result<(), SendError<AnyMessage>>;
+    fn send(&self, command: DispatcherCommand) -> Result<(), TrySendError<AnyMessage>>;
 
     /// Stop the current dispatcher and associated executor. This call is blocking and will
     /// return once all actors have stopped running.
@@ -184,7 +184,7 @@ impl<M: Send + 'static> ActorRef<M> {
 
     /// Best effort send a message to the associated actor
     pub fn tell(&self, message: M) {
-        let _ = self.sender.send(Box::new(message));
+        let _ = self.sender.try_send(Box::new(message));
     }
 }
 
