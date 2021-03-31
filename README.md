@@ -1,6 +1,7 @@
 \* \* \* EXPERIMENTAL \* \* \*
 
 # Stage
+[![Test](https://github.com/titanclass/stage/actions/workflows/test.yml/badge.svg)](https://github.com/titanclass/stage/actions/workflows/test.yml)
 
 A minimal [actor model](https://en.wikipedia.org/wiki/Actor_model) library using `nostd` and designed to run with any executor.
 
