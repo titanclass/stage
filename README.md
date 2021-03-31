@@ -3,7 +3,7 @@
 # Stage
 [![Test](https://github.com/titanclass/stage/actions/workflows/test.yml/badge.svg)](https://github.com/titanclass/stage/actions/workflows/test.yml)
 
-A minimal [actor model](https://en.wikipedia.org/wiki/Actor_model) library using `nostd` [Rust](https://www.rust-lang.org/) 
+A minimal [actor model](https://en.wikipedia.org/wiki/Actor_model) library targeting `nostd` [Rust](https://www.rust-lang.org/) 
 and designed to run with any executor.
 
 # Why are actors useful?
