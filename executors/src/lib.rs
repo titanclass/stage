@@ -19,7 +19,9 @@ struct CBReceiverImpl {
     receiver: CBReceiver<AnyMessage>,
 }
 
-impl ReceiverImpl<AnyMessage> for CBReceiverImpl {
+impl ReceiverImpl for CBReceiverImpl {
+    type Item = AnyMessage;
+
     fn as_any(&self) -> &dyn Any {
         &self.receiver
     }
@@ -29,8 +31,10 @@ struct CBSenderImpl {
     sender: CBSender<AnyMessage>,
 }
 
-impl SenderImpl<AnyMessage> for CBSenderImpl {
-    fn clone(&self) -> Box<dyn SenderImpl<AnyMessage>> {
+impl SenderImpl for CBSenderImpl {
+    type Item = AnyMessage;
+
+    fn clone(&self) -> Box<dyn SenderImpl<Item = AnyMessage>> {
         Box::new(CBSenderImpl {
             sender: self.sender.to_owned(),
         })
