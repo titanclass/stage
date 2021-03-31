@@ -100,7 +100,7 @@ pub fn unbounded_mailbox_fn(
 /// use std::sync::Arc;
 /// use crossbeam_channel::unbounded;
 /// use executors::crossbeam_workstealing_pool;
-/// use stage_dispatch_executors::WorkStealingPoolDispatcher;
+/// use stage_dispatch_crossbeam_executors::WorkStealingPoolDispatcher;
 ///
 /// let dispatcher_pool = crossbeam_workstealing_pool::small_pool(4);
 /// let dispatcher = Arc::new(WorkStealingPoolDispatcher {
