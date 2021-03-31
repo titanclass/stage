@@ -107,4 +107,4 @@ Contributions via GitHub pull requests are gladly accepted from their original a
 
 This code is open source software licensed under the [Apache-2.0 license](./LICENSE).
 
-© Copyright Titan Class P/L, 2020
+© Copyright [Titan Class P/L](https://www.titanclass.com.au/), 2020
