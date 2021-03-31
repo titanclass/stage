@@ -16,11 +16,11 @@ has no knowledge of where the actor's execution takes place (current thread, ano
 ## Why Stage?
 
 Stage's core library `stage_core` provides a minimal set of types and traits required
-to sufficiently an express an actor model, and no more.
+to sufficiently express an actor model, and no more.
 
 ## Inspiration
 
-We wish to acknowledge the [Akka](https://akka.io/) project as a great source of inspiration, with the authors of Stage also 
+We wish to acknowledge the [Akka](https://akka.io/) project as a great source of inspiration, with the authors of Stage 
 having applied Akka over the years. Akka's goal is to, "Build powerful reactive, concurrent, and distributed applications more easily".
 We hope that Stage can be composed with other projects to achieve the same goals while using Rust.
 
