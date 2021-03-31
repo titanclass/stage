@@ -6,7 +6,7 @@
 A minimal [actor model](https://en.wikipedia.org/wiki/Actor_model) library targeting `nostd` [Rust](https://www.rust-lang.org/) 
 and designed to run with any executor.
 
-# Why are actors useful?
+## Why are actors useful?
 
 Actors provide a programming convenience for concurrent computations. Actors can only receive messages, send more messages, 
 and create more actors. Actors are guaranteed to only ever receive one message at a time and can maintain their own state
