@@ -1,8 +1,8 @@
 use std::any::Any;
 
 use crossbeam_channel::{
-    bounded, unbounded, Receiver as CBReceiver, Select, Sender as CBSender,
-    TryRecvError as CBTryRecvError, TrySendError as CBTrySendError,
+    bounded, unbounded, Receiver as CbReceiver, Select, Sender as CbSender,
+    TryRecvError as CbTryRecvError, TrySendError as CbTrySendError,
 };
 use executors::*;
 use executors::{crossbeam_workstealing_pool, parker::Parker};
@@ -15,11 +15,11 @@ use stage_core::{AnyMessage, Dispatcher, DispatcherCommand, SelectWithAction};
 /// crossbeam_workstealing_pool. In addition, the channels available for use
 /// with mailbox and the command channel of a dispatcher are those of Crossbeam.
 
-struct CBReceiverImpl {
-    receiver: CBReceiver<AnyMessage>,
+struct CbReceiverImpl {
+    receiver: CbReceiver<AnyMessage>,
 }
 
-impl ReceiverImpl for CBReceiverImpl {
+impl ReceiverImpl for CbReceiverImpl {
     type Item = AnyMessage;
 
     fn as_any(&self) -> &dyn Any {
@@ -27,15 +27,15 @@ impl ReceiverImpl for CBReceiverImpl {
     }
 }
 
-struct CBSenderImpl {
-    sender: CBSender<AnyMessage>,
+struct CbSenderImpl {
+    sender: CbSender<AnyMessage>,
 }
 
-impl SenderImpl for CBSenderImpl {
+impl SenderImpl for CbSenderImpl {
     type Item = AnyMessage;
 
     fn clone(&self) -> Box<dyn SenderImpl<Item = AnyMessage>> {
-        Box::new(CBSenderImpl {
+        Box::new(CbSenderImpl {
             sender: self.sender.to_owned(),
         })
     }
@@ -43,8 +43,8 @@ impl SenderImpl for CBSenderImpl {
     fn try_send(&self, msg: AnyMessage) -> Result<(), TrySendError<AnyMessage>> {
         match self.sender.try_send(msg) {
             Ok(_) => Ok(()),
-            Err(CBTrySendError::Disconnected(e)) => Err(TrySendError::Disconnected(e)),
-            Err(CBTrySendError::Full(e)) => Err(TrySendError::Full(e)),
+            Err(CbTrySendError::Disconnected(e)) => Err(TrySendError::Disconnected(e)),
+            Err(CbTrySendError::Full(e)) => Err(TrySendError::Full(e)),
         }
     }
 }
@@ -57,12 +57,12 @@ pub fn bounded_mailbox_fn(
         let (mailbox_tx, mailbox_rx) = bounded::<AnyMessage>(cap);
         (
             Sender {
-                sender_impl: Box::new(CBSenderImpl {
+                sender_impl: Box::new(CbSenderImpl {
                     sender: mailbox_tx.to_owned(),
                 }),
             },
             Receiver {
-                receiver_impl: Box::new(CBReceiverImpl {
+                receiver_impl: Box::new(CbReceiverImpl {
                     receiver: mailbox_rx,
                 }),
             },
@@ -77,12 +77,12 @@ pub fn unbounded_mailbox_fn(
         let (mailbox_tx, mailbox_rx) = unbounded::<AnyMessage>();
         (
             Sender {
-                sender_impl: Box::new(CBSenderImpl {
+                sender_impl: Box::new(CbSenderImpl {
                     sender: mailbox_tx.to_owned(),
                 }),
             },
             Receiver {
-                receiver_impl: Box::new(CBReceiverImpl {
+                receiver_impl: Box::new(CbReceiverImpl {
                     receiver: mailbox_rx,
                 }),
             },
@@ -114,7 +114,7 @@ where
     P: Parker + Clone + 'static,
 {
     pub pool: crossbeam_workstealing_pool::ThreadPool<P>,
-    pub command_channel: (CBSender<AnyMessage>, CBReceiver<AnyMessage>),
+    pub command_channel: (CbSender<AnyMessage>, CbReceiver<AnyMessage>),
 }
 
 impl<P> Dispatcher for WorkStealingPoolDispatcher<P>
@@ -122,7 +122,7 @@ where
     P: Parker + Clone + 'static,
 {
     fn select(&self) -> Result<AnyMessage, RecvError> {
-        let mut actionable_receivers: Vec<(CBReceiver<AnyMessage>, Box<SelectWithAction>)> = vec![];
+        let mut actionable_receivers: Vec<(CbReceiver<AnyMessage>, Box<SelectWithAction>)> = vec![];
         loop {
             let mut sel = Select::new();
             sel.recv(&self.command_channel.1); // The first one added is always our control channel for receiving commands
@@ -152,7 +152,7 @@ where
                                     Ok(next_message) => {
                                         active = (current_select_command.1.action)(next_message)
                                     }
-                                    Err(e) if e == CBTryRecvError::Empty => break,
+                                    Err(e) if e == CbTryRecvError::Empty => break,
                                     Err(e) => {
                                         debug!("Error received for actor {}", e);
                                         break;
@@ -184,7 +184,7 @@ where
                                     .receiver
                                     .receiver_impl
                                     .as_any()
-                                    .downcast_ref::<CBReceiver<AnyMessage>>()
+                                    .downcast_ref::<CbReceiver<AnyMessage>>()
                                     .unwrap()
                                     .to_owned(),
                                 select_with_action,
@@ -198,7 +198,7 @@ where
                                                     .receiver
                                                     .receiver_impl
                                                     .as_any()
-                                                    .downcast_ref::<CBReceiver<AnyMessage>>()
+                                                    .downcast_ref::<CbReceiver<AnyMessage>>()
                                                     .unwrap()
                                                     .to_owned(),
                                                 Box::new(underlying),
@@ -229,8 +229,8 @@ where
             .0
             .try_send(Box::new(command))
             .map_err(|e| match e {
-                CBTrySendError::Disconnected(e) => TrySendError::Disconnected(e),
-                CBTrySendError::Full(e) => TrySendError::Full(e),
+                CbTrySendError::Disconnected(e) => TrySendError::Disconnected(e),
+                CbTrySendError::Full(e) => TrySendError::Full(e),
             })
     }
 
