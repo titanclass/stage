@@ -4,10 +4,13 @@ use core::fmt;
 
 /// Provides an abstraction over any type of channel so that the core actor library
 /// can function.
+///
+/// The primary declarations and their doc were copied from Crossbeam but appear
+/// to apply across popular runtimes including Tokio and async-std.
 
 /// The receiving side of a channel.
 pub struct Receiver<T> {
-    pub receiver_impl: Box<dyn ReceiverImpl<T>>,
+    pub receiver_impl: Box<dyn ReceiverImpl<Item = T>>,
 }
 
 unsafe impl<T: Send> Send for Receiver<T> {}
@@ -20,7 +23,8 @@ impl<T> fmt::Debug for Receiver<T> {
 }
 
 /// Required to be implemented by the provider of a channel
-pub trait ReceiverImpl<T> {
+pub trait ReceiverImpl {
+    type Item;
     /// Return self as an Any so that it can be downcast
     fn as_any(&self) -> &dyn Any;
 }
@@ -59,7 +63,7 @@ impl fmt::Display for RecvTimeoutError {
 
 /// The sending side of a channel.
 pub struct Sender<T> {
-    pub sender_impl: Box<dyn SenderImpl<T>>,
+    pub sender_impl: Box<dyn SenderImpl<Item = T>>,
 }
 
 unsafe impl<T: Send> Send for Sender<T> {}
@@ -93,11 +97,12 @@ impl<T> fmt::Debug for Sender<T> {
 }
 
 /// Required to be implemented by the provider of a channel
-pub trait SenderImpl<T> {
+pub trait SenderImpl {
+    type Item;
     // Provide a cloning function
-    fn clone(&self) -> Box<dyn SenderImpl<T>>;
+    fn clone(&self) -> Box<dyn SenderImpl<Item = Self::Item>>;
     // Provide a try_send function
-    fn try_send(&self, msg: T) -> Result<(), TrySendError<T>>;
+    fn try_send(&self, msg: Self::Item) -> Result<(), TrySendError<Self::Item>>;
 }
 
 /// An error returned from the [`try_send`] method.
