@@ -98,7 +98,7 @@ impl<M> ActorContext<M> {
 
         let mut dispatcher_context = context.to_owned();
 
-        match dispatcher.send(DispatcherCommand::SelectWithAction {
+        if let Err(e) = dispatcher.send(DispatcherCommand::SelectWithAction {
             underlying: SelectWithAction {
                 receiver: rx,
                 action: Box::new(move |message| {
@@ -119,11 +119,7 @@ impl<M> ActorContext<M> {
                 }),
             },
         }) {
-            Err(e) => {
-                debug!("Error received establishing {:?}: {}", actor_ref, e);
-                ()
-            }
-            _ => (),
+            debug!("Error received establishing {:?}: {}", actor_ref, e);
         }
 
         context
