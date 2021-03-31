@@ -3,6 +3,11 @@ name = "stage_core"
 version = "0.1.0"
 authors = ["Titan Class P/L"]
 edition = "2018"
+license = "Apache-2.0"
+description = "A minimal actor model library using nostd and designed to run with any executor"
+homepage = "https://www.titanclass.com.au/"
+repository = "https://github.com/titanclass/stage"
+readme = "README.md"
 
 [dependencies]
 log = "0.4"

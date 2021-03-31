@@ -1,8 +1,13 @@
 [package]
-name = "stage_dispatch_executors"
+name = "stage_dispatch_crossbeam_executors"
 version = "0.1.0"
 authors = ["Titan Class P/L"]
 edition = "2018"
+license = "Apache-2.0"
+description = "A Crossbeam/executors flavoured actor dispatcher library for core_stage"
+homepage = "https://www.titanclass.com.au/"
+repository = "https://github.com/titanclass/stage"
+readme = "README.md"
 
 [dependencies]
 crossbeam-channel = "0.5"
