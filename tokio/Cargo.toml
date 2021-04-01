@@ -1,0 +1,19 @@
+[package]
+name = "stage_dispatch_tokio"
+version = "0.1.0"
+authors = ["Titan Class P/L"]
+edition = "2018"
+license = "Apache-2.0"
+description = "A Tokio flavoured actor dispatcher library for core_stage"
+homepage = "https://www.titanclass.com.au/"
+repository = "https://github.com/titanclass/stage"
+readme = "README.md"
+
+[dependencies]
+tokio = { version = "1", features = ["sync"] }
+log = "0.4"
+stage_core = { path = "../core" }
+
+[dev-dependencies]
+env_logger = "0.8.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

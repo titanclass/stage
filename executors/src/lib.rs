@@ -1,12 +1,12 @@
 use std::any::Any;
 
 use crossbeam_channel::{
-    bounded, unbounded, Receiver as CbReceiver, Select, Sender as CbSender,
-    TryRecvError as CbTryRecvError, TrySendError as CbTrySendError,
+    bounded, unbounded, Receiver as CbReceiver, RecvError as CbRecvError, Select,
+    Sender as CbSender, TryRecvError as CbTryRecvError, TrySendError as CbTrySendError,
 };
 use executors::*;
 use executors::{crossbeam_workstealing_pool, parker::Parker};
-use stage_core::channel::{Receiver, ReceiverImpl, RecvError, Sender, SenderImpl, TrySendError};
+use stage_core::channel::{Receiver, ReceiverImpl, Sender, SenderImpl, TrySendError};
 
 use log::{debug, warn};
 use stage_core::{AnyMessage, Dispatcher, DispatcherCommand, SelectWithAction};
@@ -22,8 +22,8 @@ struct CbReceiverImpl {
 impl ReceiverImpl for CbReceiverImpl {
     type Item = AnyMessage;
 
-    fn as_any(&self) -> &dyn Any {
-        &self.receiver
+    fn as_any(&mut self) -> &mut (dyn Any + Send) {
+        &mut self.receiver
     }
 }
 
@@ -34,7 +34,7 @@ struct CbSenderImpl {
 impl SenderImpl for CbSenderImpl {
     type Item = AnyMessage;
 
-    fn clone(&self) -> Box<dyn SenderImpl<Item = AnyMessage>> {
+    fn clone(&self) -> Box<dyn SenderImpl<Item = AnyMessage> + Send + Sync> {
         Box::new(CbSenderImpl {
             sender: self.sender.to_owned(),
         })
@@ -102,11 +102,10 @@ pub fn unbounded_mailbox_fn(
 /// use executors::crossbeam_workstealing_pool;
 /// use stage_dispatch_crossbeam_executors::WorkStealingPoolDispatcher;
 ///
-/// let dispatcher_pool = crossbeam_workstealing_pool::small_pool(4);
-/// let dispatcher = Arc::new(WorkStealingPoolDispatcher {
-///     pool: dispatcher_pool,
-///     command_channel: unbounded(),
-/// });
+/// let pool = crossbeam_workstealing_pool::small_pool(4);
+/// let (command_tx, command_rx) = unbounded();
+/// let dispatcher = Arc::new(WorkStealingPoolDispatcher { pool, command_tx });
+/// // command_rx is then used later when using [start].
 /// ```
 
 pub struct WorkStealingPoolDispatcher<P>
@@ -114,18 +113,23 @@ where
     P: Parker + Clone + 'static,
 {
     pub pool: crossbeam_workstealing_pool::ThreadPool<P>,
-    pub command_channel: (CbSender<AnyMessage>, CbReceiver<AnyMessage>),
+    pub command_tx: CbSender<AnyMessage>,
 }
 
-impl<P> Dispatcher for WorkStealingPoolDispatcher<P>
+impl<P> WorkStealingPoolDispatcher<P>
 where
     P: Parker + Clone + 'static,
 {
-    fn select(&self) -> Result<AnyMessage, RecvError> {
+    /// Start this dispatcher. Starting this dispatcher selects all receivers and dispatch their actions.
+    /// On dispatching on action, their selection should becomes ineligible so that they cannot be selected
+    /// on another message until they have completed their processing. Once complete, the action is be followed by
+    /// an enqueuing of their selection once more by calling upon the send function.
+    /// Note that this function is blocking.
+    pub fn start(&self, command_rx: CbReceiver<AnyMessage>) -> Result<AnyMessage, CbRecvError> {
         let mut actionable_receivers: Vec<(CbReceiver<AnyMessage>, Box<SelectWithAction>)> = vec![];
         loop {
             let mut sel = Select::new();
-            sel.recv(&self.command_channel.1); // The first one added is always our control channel for receiving commands
+            sel.recv(&command_rx); // The first one added is always our control channel for receiving commands
             actionable_receivers.iter().for_each(|command| {
                 sel.recv(&command.0);
             });
@@ -133,7 +137,7 @@ where
 
             let index = oper.index();
             let receiver = match index {
-                0 => &self.command_channel.1,
+                0 => &command_rx,
                 _ => &actionable_receivers[index - 1].0,
             };
             let res = oper.recv(receiver);
@@ -143,7 +147,7 @@ where
                 let mut current_select_command = actionable_receivers.swap_remove(index - 1);
                 match res {
                     Ok(message) => {
-                        let tx = self.command_channel.0.to_owned();
+                        let tx = self.command_tx.to_owned();
                         self.pool.execute(move || {
                             let receiver = current_select_command.0;
                             let mut active = (current_select_command.1.action)(message);
@@ -179,7 +183,7 @@ where
                 match res {
                     Ok(message) => {
                         match message.downcast::<SelectWithAction>() {
-                            Ok(select_with_action) => actionable_receivers.push((
+                            Ok(mut select_with_action) => actionable_receivers.push((
                                 select_with_action
                                     .receiver
                                     .receiver_impl
@@ -192,7 +196,7 @@ where
                             Err(other_message_type) => {
                                 match other_message_type.downcast::<DispatcherCommand>() {
                                     Ok(dispatcher_command) => match *dispatcher_command {
-                                        DispatcherCommand::SelectWithAction { underlying } => {
+                                        DispatcherCommand::SelectWithAction { mut underlying } => {
                                             actionable_receivers.push((
                                                 underlying
                                                     .receiver
@@ -216,26 +220,35 @@ where
                             }
                         }
                     }
-                    Err(_) => {
-                        return Err(RecvError);
+                    e @ Err(_) => {
+                        return e;
                     }
                 }
             }
         }
     }
+}
 
+impl<P> Dispatcher for WorkStealingPoolDispatcher<P>
+where
+    P: Parker + Clone + 'static,
+{
     fn send(&self, command: DispatcherCommand) -> Result<(), TrySendError<AnyMessage>> {
-        self.command_channel
-            .0
+        self.command_tx
             .try_send(Box::new(command))
             .map_err(|e| match e {
                 CbTrySendError::Disconnected(e) => TrySendError::Disconnected(e),
                 CbTrySendError::Full(e) => TrySendError::Full(e),
             })
     }
+}
 
-    fn stop(&self) {
-        let _ = self.send(DispatcherCommand::Stop);
+impl<P> Drop for WorkStealingPoolDispatcher<P>
+where
+    P: Parker + Clone + 'static,
+{
+    fn drop(&mut self) {
+        self.stop()
     }
 }
 
@@ -345,11 +358,9 @@ mod tests {
 
         // Establish our dispatcher.
 
-        let dispatcher_pool = crossbeam_workstealing_pool::small_pool(4);
-        let dispatcher = Arc::new(WorkStealingPoolDispatcher {
-            pool: dispatcher_pool,
-            command_channel: unbounded(),
-        });
+        let pool = crossbeam_workstealing_pool::small_pool(4);
+        let (command_tx, command_rx) = unbounded();
+        let dispatcher = Arc::new(WorkStealingPoolDispatcher { pool, command_tx });
 
         // Establish a function to produce mailboxes
 
@@ -372,18 +383,18 @@ mod tests {
             name: "Stage".to_string(),
         });
 
-        // Run the dispatcher select function on its own thread. We wait
-        // for the select function to finish, which will be when will
-        // tell the "system" (the actor context above) to stop, it is stops
-        // itself.
+        // Run the dispatcher on its own thread. We wait for the run
+        // function to finish, which will be when will we tell the "system"
+        // (the actor context above) to stop, it is stops itself.
 
-        let select_thread_dispatcher = dispatcher.to_owned();
-        let select_thread = thread::spawn(move || select_thread_dispatcher.select());
+        let dispatcher_thread_dispatcher = dispatcher.to_owned();
+        let dispatcher_thread =
+            thread::spawn(move || dispatcher_thread_dispatcher.start(command_rx));
 
         thread::sleep(Duration::from_millis(500));
 
         dispatcher.stop();
 
-        assert!(select_thread.join().is_ok());
+        assert!(dispatcher_thread.join().is_ok());
     }
 }

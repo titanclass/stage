@@ -7,7 +7,7 @@ use crate::alloc::borrow::ToOwned;
 use crate::alloc::{boxed::Box, sync::Arc};
 
 pub mod channel;
-use channel::{Receiver, RecvError, RecvTimeoutError, Sender, TrySendError};
+use channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 
 use log::{debug, warn};
 
@@ -41,7 +41,7 @@ pub enum DispatcherCommand {
     /// a function should be performed to process it.
     SelectWithAction { underlying: SelectWithAction },
 
-    /// Tells the dispatcher to finish up. The thread on which the select
+    /// Tells the dispatcher to finish up. The thread on which the dispatcher run
     /// function is running can then be joined.
     Stop,
 }
@@ -49,18 +49,13 @@ pub enum DispatcherCommand {
 /// A dispatcher composes a executor to call upon the actor's message queue, ultimately calling
 /// upon the actor's receive method.
 pub trait Dispatcher {
-    /// Select all receivers and dispatch their actions. On dispatching on action, their
-    /// selection should become ineligible so that they cannot be selected on another message until
-    /// they have completed their processing. Once complete, the action should be followed by
-    /// an enqueuing of their selection once more by calling upon the send function.
-    fn select(&self) -> Result<AnyMessage, RecvError>;
-
     /// Enqueue a command to the channel being selected on.
     fn send(&self, command: DispatcherCommand) -> Result<(), TrySendError<AnyMessage>>;
 
-    /// Stop the current dispatcher and associated executor. This call is blocking and will
-    /// return once all actors have stopped running.
-    fn stop(&self);
+    /// Stop the current dispatcher
+    fn stop(&self) {
+        let _ = self.send(DispatcherCommand::Stop);
+    }
 }
 
 /// An actor context provides state that all actors need to be able to operate.
@@ -104,9 +99,8 @@ impl<M> ActorContext<M> {
                 action: Box::new(move |message| {
                     if dispatcher_context.active {
                         match message.downcast::<M>() {
-                            Ok(boxed_m) => {
-                                let m = *boxed_m;
-                                actor.receive(&mut dispatcher_context, &m);
+                            Ok(ref m) => {
+                                actor.receive(&mut dispatcher_context, m);
                             }
                             Err(m) => warn!(
                                 "Unexpected message in {:?}: type_id: {:?}",
