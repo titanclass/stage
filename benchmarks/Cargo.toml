@@ -1,0 +1,24 @@
+[package]
+name = "benchmarks"
+version = "0.1.0"
+authors = ["Titan Class P/L"]
+edition = "2018"
+license = "Apache-2.0"
+description = "Benchmarking for Stage"
+homepage = "https://www.titanclass.com.au/"
+repository = "https://github.com/titanclass/stage"
+readme = "README.md"
+publish = false
+
+[dev-dependencies]
+criterion = {version = "0.3", features = ["async_tokio", "html_reports"]}
+crossbeam-channel = "0.5"
+executors = "0.8.0"
+stage_core = { path = "../core" }
+stage_dispatch_crossbeam_executors = { path = "../executors" }
+stage_dispatch_tokio = { path = "../tokio" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[[bench]]
+name = "actors"
+harness = false
