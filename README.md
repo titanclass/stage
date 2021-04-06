@@ -8,7 +8,7 @@ and designed to run with any executor.
 
 ## Why are actors useful?
 
-Actors provide a programming convenience for concurrent computations. Actors can only receive messages, send more messages, 
+Actors provide a stateful programming convenience for concurrent computations. Actors can only receive messages, send more messages, 
 and create more actors. Actors are guaranteed to only ever receive one message at a time and can maintain their own state
 without the concern of locks. Given actor references, location transparency is also attainable where the sender of a message
 has no knowledge of where the actor's execution takes place (current thread, another thread, another core, another machine...).
@@ -50,11 +50,9 @@ Dispatcher and mailbox setup looks like this - we will use the `stage_dispatch_c
 along with an unbounded channel for communicating with it and for each actor:
 
 ```rust
-let dispatcher_pool = crossbeam_workstealing_pool::small_pool(4);
-let dispatcher = Arc::new(WorkStealingPoolDispatcher {
-    pool: dispatcher_pool,
-    command_channel: unbounded(),
-});
+let pool = crossbeam_workstealing_pool::small_pool(4);
+let (command_tx, command_rx) = unbounded();
+let dispatcher = Arc::new(WorkStealingPoolDispatcher { pool, command_tx });
 
 let mailbox_fn = Arc::new(unbounded_mailbox_fn());
 ```
@@ -76,6 +74,12 @@ system.actor_ref.tell(SayHello {
 For complete examples, please consult the tests associated with each dispatcher library.
 
 ## What about...
+
+### Channels
+
+Actors here build on channels and associate state with the receiver. The type system is used
+to enforce actor semantics; in particular, requiring a single receiver so that an actor's
+state can be mutated without contention.
 
 ### What about actor supervision?
 

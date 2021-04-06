@@ -10,11 +10,8 @@ use core::fmt;
 
 /// The receiving side of a channel.
 pub struct Receiver<T> {
-    pub receiver_impl: Box<dyn ReceiverImpl<Item = T>>,
+    pub receiver_impl: Box<dyn ReceiverImpl<Item = T> + Send>,
 }
-
-unsafe impl<T: Send> Send for Receiver<T> {}
-unsafe impl<T: Send> Sync for Receiver<T> {}
 
 impl<T> fmt::Debug for Receiver<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -26,17 +23,7 @@ impl<T> fmt::Debug for Receiver<T> {
 pub trait ReceiverImpl {
     type Item;
     /// Return self as an Any so that it can be downcast
-    fn as_any(&self) -> &dyn Any;
-}
-
-/// An error returned from the [`recv`] method.
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub struct RecvError;
-
-impl fmt::Display for RecvError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        "receiving on an empty and disconnected channel".fmt(f)
-    }
+    fn as_any(&mut self) -> &mut (dyn Any + Send);
 }
 
 /// An error returned from the [`recv_timeout`] method.
@@ -63,11 +50,8 @@ impl fmt::Display for RecvTimeoutError {
 
 /// The sending side of a channel.
 pub struct Sender<T> {
-    pub sender_impl: Box<dyn SenderImpl<Item = T>>,
+    pub sender_impl: Box<dyn SenderImpl<Item = T> + Send + Sync>,
 }
-
-unsafe impl<T: Send> Send for Sender<T> {}
-unsafe impl<T: Send> Sync for Sender<T> {}
 
 impl<T> Sender<T> {
     /// Attempts to send a message into the channel without blocking.
@@ -100,9 +84,33 @@ impl<T> fmt::Debug for Sender<T> {
 pub trait SenderImpl {
     type Item;
     // Provide a cloning function
-    fn clone(&self) -> Box<dyn SenderImpl<Item = Self::Item>>;
+    fn clone(&self) -> Box<dyn SenderImpl<Item = Self::Item> + Send + Sync>;
     // Provide a try_send function
     fn try_send(&self, msg: Self::Item) -> Result<(), TrySendError<Self::Item>>;
+}
+
+/// An error returned from the [`try_recv`] method.
+///
+/// [`try_recv`]: super::Receiver::try_recv
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum TryRecvError {
+    /// A message could not be received because the channel is empty.
+    ///
+    /// If this is a zero-capacity channel, then the error indicates that there was no sender
+    /// available to send a message at the time.
+    Empty,
+
+    /// The message could not be received because the channel is empty and disconnected.
+    Disconnected,
+}
+
+impl fmt::Display for TryRecvError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            TryRecvError::Empty => "receiving on an empty channel".fmt(f),
+            TryRecvError::Disconnected => "receiving on an empty and disconnected channel".fmt(f),
+        }
+    }
 }
 
 /// An error returned from the [`try_send`] method.
@@ -127,30 +135,6 @@ impl<T> fmt::Display for TrySendError<T> {
         match *self {
             TrySendError::Full(..) => "sending on a full channel".fmt(f),
             TrySendError::Disconnected(..) => "sending on a disconnected channel".fmt(f),
-        }
-    }
-}
-
-/// An error returned from the [`try_recv`] method.
-///
-/// [`try_recv`]: super::Receiver::try_recv
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub enum TryRecvError {
-    /// A message could not be received because the channel is empty.
-    ///
-    /// If this is a zero-capacity channel, then the error indicates that there was no sender
-    /// available to send a message at the time.
-    Empty,
-
-    /// The message could not be received because the channel is empty and disconnected.
-    Disconnected,
-}
-
-impl fmt::Display for TryRecvError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            TryRecvError::Empty => "receiving on an empty channel".fmt(f),
-            TryRecvError::Disconnected => "receiving on an empty and disconnected channel".fmt(f),
         }
     }
 }
