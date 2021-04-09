@@ -70,6 +70,19 @@ pub fn mailbox_fn(
     })
 }
 
+/// A convenience for extracting a Tokio Receiver from a Stage Receiver type.
+/// This can wrap an ActorRef.ask call.
+#[macro_export]
+macro_rules! receiver {
+    ($receiver:expr) => {
+        $receiver
+            .receiver_impl
+            .as_any()
+            .downcast_mut::<TkReceiver<AnyMessage>>()
+            .unwrap()
+    };
+}
+
 struct TkUnboundedReceiverImpl {
     receiver: TkUnboundedReceiver<AnyMessage>,
 }
@@ -122,6 +135,20 @@ pub fn unbounded_mailbox_fn(
         )
     })
 }
+
+/// A convenience for extracting a Tokio Receiver from a Stage Receiver type.
+/// This can wrap an ActorRef.ask call.
+#[macro_export]
+macro_rules! unbounded_receiver {
+    ($receiver:expr) => {
+        $receiver
+            .receiver_impl
+            .as_any()
+            .downcast_mut::<TkUnboundedReceiver<AnyMessage>>()
+            .unwrap()
+    };
+}
+
 struct TaskStopped {
     id: usize,
 }

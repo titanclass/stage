@@ -70,6 +70,19 @@ pub fn bounded_mailbox_fn(
     })
 }
 
+/// A convenience for extracting a Crossbeam Receiver from a Stage Receiver type.
+/// This can wrap an ActorRef.ask call.
+#[macro_export]
+macro_rules! receiver {
+    ($receiver:expr) => {
+        $receiver
+            .receiver_impl
+            .as_any()
+            .downcast_ref::<CbReceiver<AnyMessage>>()
+            .unwrap()
+    };
+}
+
 /// Creates a Crossbeam-based bounded mailbox for communicating with an actor.
 pub fn unbounded_mailbox_fn(
 ) -> Box<dyn Fn() -> (Sender<AnyMessage>, Receiver<AnyMessage>) + Send + Sync> {
@@ -184,13 +197,7 @@ where
                     Ok(message) => {
                         match message.downcast::<SelectWithAction>() {
                             Ok(mut select_with_action) => actionable_receivers.push((
-                                select_with_action
-                                    .receiver
-                                    .receiver_impl
-                                    .as_any()
-                                    .downcast_ref::<CbReceiver<AnyMessage>>()
-                                    .unwrap()
-                                    .to_owned(),
+                                receiver!(select_with_action.receiver).to_owned(),
                                 select_with_action,
                             )),
                             Err(other_message_type) => {
@@ -198,13 +205,7 @@ where
                                     Ok(dispatcher_command) => match *dispatcher_command {
                                         DispatcherCommand::SelectWithAction { mut underlying } => {
                                             actionable_receivers.push((
-                                                underlying
-                                                    .receiver
-                                                    .receiver_impl
-                                                    .as_any()
-                                                    .downcast_ref::<CbReceiver<AnyMessage>>()
-                                                    .unwrap()
-                                                    .to_owned(),
+                                                receiver!(underlying.receiver).to_owned(),
                                                 Box::new(underlying),
                                             ));
                                         }
