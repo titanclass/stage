@@ -1,14 +1,21 @@
-use std::any::Any;
+use std::{any::Any, future::Future, marker::PhantomData, pin::Pin, time::Duration};
 
 use log::warn;
-use stage_core::channel::{Receiver, ReceiverImpl, Sender, SenderImpl, TrySendError};
-use tokio::sync::mpsc::{
-    channel, unbounded_channel, Receiver as TkReceiver, Sender as TkSender,
-    UnboundedReceiver as TkUnboundedReceiver, UnboundedSender as TkUnboundedSender,
+use stage_core::{
+    channel::{Receiver, ReceiverImpl, Sender, SenderImpl, TrySendError},
+    ActorRef,
 };
 use tokio::{
     sync::mpsc::error::{SendError as TkSendError, TrySendError as TkTrySendError},
     task::JoinHandle,
+    time::error::Elapsed,
+};
+use tokio::{
+    sync::mpsc::{
+        channel, unbounded_channel, Receiver as TkReceiver, Sender as TkSender,
+        UnboundedReceiver as TkUnboundedReceiver, UnboundedSender as TkUnboundedSender,
+    },
+    time::timeout,
 };
 
 use stage_core::{AnyMessage, Dispatcher, DispatcherCommand};
@@ -70,19 +77,6 @@ pub fn mailbox_fn(
     })
 }
 
-/// A convenience for extracting a Tokio Receiver from a Stage Receiver type.
-/// This can wrap an ActorRef.ask call.
-#[macro_export]
-macro_rules! receiver {
-    ($receiver:expr) => {
-        $receiver
-            .receiver_impl
-            .as_any()
-            .downcast_mut::<TkReceiver<AnyMessage>>()
-            .unwrap()
-    };
-}
-
 struct TkUnboundedReceiverImpl {
     receiver: TkUnboundedReceiver<AnyMessage>,
 }
@@ -136,17 +130,48 @@ pub fn unbounded_mailbox_fn(
     })
 }
 
-/// A convenience for extracting a Tokio Receiver from a Stage Receiver type.
-/// This can wrap an ActorRef.ask call.
-#[macro_export]
-macro_rules! unbounded_receiver {
-    ($receiver:expr) => {
-        $receiver
-            .receiver_impl
-            .as_any()
-            .downcast_mut::<TkUnboundedReceiver<AnyMessage>>()
-            .unwrap()
-    };
+type AskResult<M2> = Result<Option<Box<M2>>, Elapsed>;
+
+/// Implements the Ask pattern where a request message is sent
+/// and a reply is expected.
+pub trait Ask<M, M2> {
+    /// Perform a one-shot ask operation while passing in a function
+    /// to construct a message that accepts a reply_to sender.
+    /// All asks have a timeout. Note also that if an unexpected
+    /// reply is received then a None value will be returned.
+    fn ask(
+        &self,
+        request_fn: &dyn Fn(&ActorRef<M2>) -> M,
+        recv_timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = AskResult<M2>>>>;
+}
+
+impl<M, M2> Ask<M, M2> for ActorRef<M>
+where
+    M: Send + 'static,
+    M2: Send + 'static,
+{
+    fn ask(
+        &self,
+        request_fn: &dyn Fn(&ActorRef<M2>) -> M,
+        recv_timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = AskResult<M2>>>> {
+        let (reply_tx, mut reply_rx) = channel::<AnyMessage>(1);
+        let _ = self.sender.try_send(Box::new(request_fn(&ActorRef {
+            phantom_marker: PhantomData::<M2>,
+            sender: Sender {
+                sender_impl: Box::new(TkSenderImpl { sender: reply_tx }),
+            },
+        })));
+
+        Box::pin(async move {
+            match timeout(recv_timeout, reply_rx.recv()).await {
+                Ok(Some(a)) => Ok(a.downcast::<M2>().ok()),
+                Ok(None) => Ok(None),
+                Err(e) => Err(e),
+            }
+        })
+    }
 }
 
 struct TaskStopped {

@@ -26,28 +26,6 @@ pub trait ReceiverImpl {
     fn as_any(&mut self) -> &mut (dyn Any + Send);
 }
 
-/// An error returned from the [`recv_timeout`] method.
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub enum RecvTimeoutError {
-    /// A message could not be received because the channel is empty and the operation timed out.
-    ///
-    /// If this is a zero-capacity channel, then the error indicates that there was no sender
-    /// available to send a message and the operation timed out.
-    Timeout,
-
-    /// The message could not be received because the channel is empty and disconnected.
-    Disconnected,
-}
-
-impl fmt::Display for RecvTimeoutError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            RecvTimeoutError::Timeout => "timed out waiting on receive operation".fmt(f),
-            RecvTimeoutError::Disconnected => "channel is empty and disconnected".fmt(f),
-        }
-    }
-}
-
 /// The sending side of a channel.
 pub struct Sender<T> {
     pub sender_impl: Box<dyn SenderImpl<Item = T> + Send + Sync>,

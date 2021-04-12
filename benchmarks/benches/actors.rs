@@ -1,22 +1,18 @@
-use std::{sync::Arc, thread};
+use std::{sync::Arc, thread, time::Duration};
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use crossbeam_channel::{bounded as cb_bounded, unbounded as cb_unbounded, Receiver as CbReceiver};
+use crossbeam_channel::{bounded as cb_bounded, unbounded as cb_unbounded};
 use executors::crossbeam_workstealing_pool;
-use stage_core::{Actor, ActorContext, ActorRef, AnyMessage};
+use stage_core::{Actor, ActorContext, ActorRef};
 use stage_dispatch_crossbeam_executors::{
-    bounded_mailbox_fn as cbe_bounded_mailbox_fn, receiver as cbe_receiver,
-    unbounded_mailbox_fn as cbe_unbounded_mailbox_fn, WorkStealingPoolDispatcher,
+    bounded_mailbox_fn as cbe_bounded_mailbox_fn, unbounded_mailbox_fn as cbe_unbounded_mailbox_fn,
+    WorkStealingPoolDispatcher,
 };
 use stage_dispatch_tokio::{
-    mailbox_fn as tk_mailbox_fn, receiver as tk_receiver,
-    unbounded_mailbox_fn as tk_unbounded_mailbox_fn, unbounded_receiver as tk_unbounded_receiver,
-    TokioDispatcher, TokioUnboundedDispatcher,
+    mailbox_fn as tk_mailbox_fn, unbounded_mailbox_fn as tk_unbounded_mailbox_fn, TokioDispatcher,
+    TokioUnboundedDispatcher,
 };
-use tokio::sync::mpsc::{
-    channel as tk_channel, unbounded_channel as tk_unbounded_channel, Receiver as TkReceiver,
-    UnboundedReceiver as TkUnboundedReceiver,
-};
+use tokio::sync::mpsc::{channel as tk_channel, unbounded_channel as tk_unbounded_channel};
 
 // Fixtures
 
@@ -49,20 +45,18 @@ fn send_messages_to_other_actors_bounded_cbe(c: &mut Criterion) {
         mailbox_fn.to_owned(),
     );
 
+    use stage_dispatch_crossbeam_executors::Ask;
+
     c.bench_function(
         "send messages to other actors using Crossbeam and Executors with bounded channels",
         |b| {
             b.iter(|| {
-                let _ = cbe_receiver!(my_actor.actor_ref.ask(
+                my_actor.actor_ref.ask(
                     &|reply_to| Request {
                         reply_to: reply_to.to_owned(),
                     },
-                    mailbox_fn.to_owned(),
-                ))
-                .recv()
-                .unwrap()
-                .downcast_ref::<Reply>()
-                .unwrap();
+                    Duration::from_secs(1),
+                )
             });
         },
     );
@@ -84,20 +78,18 @@ fn send_messages_to_other_actors_unbounded_cbe(c: &mut Criterion) {
         mailbox_fn.to_owned(),
     );
 
+    use stage_dispatch_crossbeam_executors::Ask;
+
     c.bench_function(
         "send messages to other actors using Crossbeam and Executors with unbounded channels",
         |b| {
             b.iter(|| {
-                let _ = cbe_receiver!(my_actor.actor_ref.ask(
+                my_actor.actor_ref.ask(
                     &|reply_to| Request {
                         reply_to: reply_to.to_owned(),
                     },
-                    mailbox_fn.to_owned(),
-                ))
-                .recv()
-                .unwrap()
-                .downcast_ref::<Reply>()
-                .unwrap();
+                    Duration::from_secs(1),
+                )
             });
         },
     );
@@ -118,21 +110,18 @@ fn send_messages_to_other_actors_bounded_tk(c: &mut Criterion) {
     let dispatcher_task_dispatcher = dispatcher.to_owned();
     let _ = rt.spawn(async move { dispatcher_task_dispatcher.start(command_rx).await });
 
+    use stage_dispatch_tokio::Ask;
+
     c.bench_function(
         "send messages to other actors using Tokio with bounded channels",
         |b| {
             b.to_async(&rt).iter(|| async {
-                let _ = tk_receiver!(my_actor.actor_ref.ask(
+                my_actor.actor_ref.ask(
                     &|reply_to| Request {
                         reply_to: reply_to.to_owned(),
                     },
-                    mailbox_fn.to_owned(),
-                ))
-                .recv()
-                .await
-                .unwrap()
-                .downcast_ref::<Reply>()
-                .unwrap();
+                    Duration::from_secs(1),
+                )
             });
         },
     );
@@ -153,21 +142,18 @@ fn send_messages_to_other_actors_unbounded_tk(c: &mut Criterion) {
     let dispatcher_task_dispatcher = dispatcher.to_owned();
     let _ = rt.spawn(async move { dispatcher_task_dispatcher.start(command_rx).await });
 
+    use stage_dispatch_tokio::Ask;
+
     c.bench_function(
         "send messages to other actors using Tokio with unbounded channels",
         |b| {
             b.to_async(&rt).iter(|| async {
-                let _ = tk_unbounded_receiver!(my_actor.actor_ref.ask(
+                my_actor.actor_ref.ask(
                     &|reply_to| Request {
                         reply_to: reply_to.to_owned(),
                     },
-                    mailbox_fn.to_owned(),
-                ))
-                .recv()
-                .await
-                .unwrap()
-                .downcast_ref::<Reply>()
-                .unwrap();
+                    Duration::from_secs(1),
+                )
             });
         },
     );

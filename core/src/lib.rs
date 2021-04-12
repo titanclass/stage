@@ -157,30 +157,11 @@ impl<M> Clone for ActorContext<M> {
 /// longer exist, in which case messages will be delivered
 /// to a dead letter channel.
 pub struct ActorRef<M> {
-    phantom_marker: PhantomData<M>,
-    sender: Sender<AnyMessage>,
+    pub phantom_marker: PhantomData<M>,
+    pub sender: Sender<AnyMessage>,
 }
 
 impl<M: Send + 'static> ActorRef<M> {
-    /// Perform an ask operation on the associated actor
-    /// while passing in a function to construct a message
-    /// that accepts a reply_to sender
-    pub fn ask<M2>(
-        &self,
-        request_fn: &dyn Fn(&ActorRef<M2>) -> M,
-        mailbox_fn: Arc<dyn Fn() -> (Sender<AnyMessage>, Receiver<AnyMessage>)>,
-    ) -> Receiver<AnyMessage>
-    where
-        M2: Send + 'static,
-    {
-        let (reply_tx, reply_rx) = mailbox_fn();
-        let _ = self.sender.try_send(Box::new(request_fn(&ActorRef {
-            phantom_marker: PhantomData::<M2>,
-            sender: reply_tx,
-        })));
-        reply_rx
-    }
-
     /// Best effort send a message to the associated actor
     pub fn tell(&self, message: M) {
         let _ = self.sender.try_send(Box::new(message));
@@ -209,7 +190,11 @@ mod tests {
     use super::*;
 
     use std::sync::mpsc::{sync_channel, Receiver as SyncReceiver, SyncSender};
-    use std::sync::mpsc::{RecvError as SyncRecvError, TrySendError as SyncTrySendError};
+    use std::sync::mpsc::{
+        RecvError as SyncRecvError, RecvTimeoutError as SyncRecvTimeoutError,
+        TrySendError as SyncTrySendError,
+    };
+    use std::time::Duration;
 
     // This test provides reasonable coverage across the core APIs. A dispatcher is
     // set up to process command messages and actor messages synchronously to reason
@@ -222,6 +207,7 @@ mod tests {
             reply_to: ActorRef<Reply>,
             reply_with: u32,
         }
+        #[derive(Debug, PartialEq)]
         struct Reply {
             value: u32,
         }
@@ -335,6 +321,45 @@ mod tests {
                 )
             })
         }
+        type AskResult<M2> = Result<Box<M2>, SyncRecvTimeoutError>;
+        pub trait Ask<M, M2> {
+            fn request(&self, request_fn: &dyn Fn(&ActorRef<M2>) -> M) -> SyncReceiver<AnyMessage>;
+            fn reply(
+                &self,
+                reply_rx: &SyncReceiver<AnyMessage>,
+                recv_timeout: Duration,
+            ) -> AskResult<M2>;
+        }
+        impl<M, M2> Ask<M, M2> for ActorRef<M>
+        where
+            M: Send + 'static,
+            M2: Send + 'static,
+        {
+            fn request(&self, request_fn: &dyn Fn(&ActorRef<M2>) -> M) -> SyncReceiver<AnyMessage> {
+                let (reply_tx, reply_rx) = sync_channel::<AnyMessage>(1);
+                let _ = self.sender.try_send(Box::new(request_fn(&ActorRef {
+                    phantom_marker: PhantomData::<M2>,
+                    sender: Sender {
+                        sender_impl: Box::new(SyncSenderImpl { sender: reply_tx }),
+                    },
+                })));
+                reply_rx
+            }
+            fn reply(
+                &self,
+                reply_rx: &SyncReceiver<AnyMessage>,
+                recv_timeout: Duration,
+            ) -> AskResult<M2> {
+                reply_rx
+                    .recv_timeout(recv_timeout)
+                    .map(|message| {
+                        message
+                            .downcast::<M2>()
+                            .map_err(|_| SyncRecvTimeoutError::Timeout)
+                    })
+                    .and_then(|v| v)
+            }
+        }
 
         // Establish the dispatcher and mailbox
 
@@ -355,31 +380,22 @@ mod tests {
         // Send an ask request to the actor and have the actor process its
         // messages
 
-        let expected_reply_value = 10;
+        let expected_value = 10;
 
-        let mut ask_receiver = my_actor.actor_ref.ask(
-            &|reply_to| Request {
-                reply_to: reply_to.to_owned(),
-                reply_with: expected_reply_value,
-            },
-            mailbox_fn,
-        );
+        let reply_rx = my_actor.actor_ref.request(&|reply_to| Request {
+            reply_to: reply_to.to_owned(),
+            reply_with: expected_value,
+        });
         dispatcher.receive_messages(&mut selection.unwrap().unwrap());
+        let result = my_actor.actor_ref.reply(&reply_rx, Duration::from_secs(1));
 
         // Test the ask reply
 
         assert_eq!(
-            ask_receiver
-                .receiver_impl
-                .as_any()
-                .downcast_ref::<SyncReceiver<AnyMessage>>()
-                .unwrap()
-                .recv()
-                .unwrap()
-                .downcast_ref::<Reply>()
-                .unwrap()
-                .value,
-            expected_reply_value
+            result,
+            Ok(Box::new(Reply {
+                value: expected_value
+            }))
         )
     }
 }
