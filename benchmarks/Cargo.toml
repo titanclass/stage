@@ -17,7 +17,7 @@ executors = "0.8.0"
 stage_core = { path = "../core" }
 stage_dispatch_crossbeam_executors = { path = "../executors" }
 stage_dispatch_tokio = { path = "../tokio" }
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [[bench]]
 name = "actors"

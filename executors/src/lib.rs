@@ -1,12 +1,15 @@
-use std::any::Any;
+use std::{any::Any, marker::PhantomData, time::Duration};
 
 use crossbeam_channel::{
-    bounded, unbounded, Receiver as CbReceiver, RecvError as CbRecvError, Select,
+    bounded, unbounded, Receiver as CbReceiver, RecvError as CbRecvError, RecvTimeoutError, Select,
     Sender as CbSender, TryRecvError as CbTryRecvError, TrySendError as CbTrySendError,
 };
 use executors::*;
 use executors::{crossbeam_workstealing_pool, parker::Parker};
-use stage_core::channel::{Receiver, ReceiverImpl, Sender, SenderImpl, TrySendError};
+use stage_core::{
+    channel::{Receiver, ReceiverImpl, Sender, SenderImpl, TrySendError},
+    ActorRef,
+};
 
 use log::{debug, warn};
 use stage_core::{AnyMessage, Dispatcher, DispatcherCommand, SelectWithAction};
@@ -25,6 +28,17 @@ impl ReceiverImpl for CbReceiverImpl {
     fn as_any(&mut self) -> &mut (dyn Any + Send) {
         &mut self.receiver
     }
+}
+
+// A convenience for extracting a Crossbeam Receiver from a Stage Receiver type.
+macro_rules! receiver {
+    ($receiver:expr) => {
+        $receiver
+            .receiver_impl
+            .as_any()
+            .downcast_ref::<CbReceiver<AnyMessage>>()
+            .unwrap()
+    };
 }
 
 struct CbSenderImpl {
@@ -70,19 +84,6 @@ pub fn bounded_mailbox_fn(
     })
 }
 
-/// A convenience for extracting a Crossbeam Receiver from a Stage Receiver type.
-/// This can wrap an ActorRef.ask call.
-#[macro_export]
-macro_rules! receiver {
-    ($receiver:expr) => {
-        $receiver
-            .receiver_impl
-            .as_any()
-            .downcast_ref::<CbReceiver<AnyMessage>>()
-            .unwrap()
-    };
-}
-
 /// Creates a Crossbeam-based bounded mailbox for communicating with an actor.
 pub fn unbounded_mailbox_fn(
 ) -> Box<dyn Fn() -> (Sender<AnyMessage>, Receiver<AnyMessage>) + Send + Sync> {
@@ -101,6 +102,48 @@ pub fn unbounded_mailbox_fn(
             },
         )
     })
+}
+
+type AskResult<M2> = Result<Box<M2>, RecvTimeoutError>;
+
+/// Implements the Ask pattern where a request message is sent
+/// and a reply is expected.
+pub trait Ask<M, M2> {
+    /// Perform a one-shot ask operation while passing in a function
+    /// to construct a message that accepts a reply_to sender.
+    /// All asks have a timeout. Note also that if an unexpected
+    /// reply is received then a timeout error will be indicated.
+    /// Note that this method will block.
+    fn ask(&self, request_fn: &dyn Fn(&ActorRef<M2>) -> M, recv_timeout: Duration)
+        -> AskResult<M2>;
+}
+
+impl<M, M2> Ask<M, M2> for ActorRef<M>
+where
+    M: Send + 'static,
+    M2: Send + 'static,
+{
+    fn ask(
+        &self,
+        request_fn: &dyn Fn(&ActorRef<M2>) -> M,
+        recv_timeout: Duration,
+    ) -> AskResult<M2> {
+        let (reply_tx, reply_rx) = bounded::<AnyMessage>(1);
+        let _ = self.sender.try_send(Box::new(request_fn(&ActorRef {
+            phantom_marker: PhantomData::<M2>,
+            sender: Sender {
+                sender_impl: Box::new(CbSenderImpl { sender: reply_tx }),
+            },
+        })));
+        reply_rx
+            .recv_timeout(recv_timeout)
+            .map(|message| {
+                message
+                    .downcast::<M2>()
+                    .map_err(|_| RecvTimeoutError::Timeout)
+            })
+            .and_then(|v| v)
+    }
 }
 
 /// A Dispatcher for Stage that leverages the Executors crate's work-stealing ThreadPool.

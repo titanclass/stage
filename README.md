@@ -74,27 +74,17 @@ system.actor_ref.tell(SayHello {
 We are also able to perform request/reply scenarios using `ask`. For example, using tokio as a runtime:
 
 ```rust
-let _ = receiver!(my_actor_ref.ask(
-    &|reply_to| SomeRequest {
+actor_ref.ask(
+    &|reply_to| Request {
         reply_to: reply_to.to_owned(),
     },
-    mailbox_fn.to_owned(),
-))
-.recv()
-.await
-.unwrap()
-.downcast_ref::<SomeReply>()
-.unwrap();
+    Duration::from_secs(1),
+)
 ```
 
-There's a `receiver!` macro provided by Stage that, in this case, returns a
-Tokio `Receiver` whereupon a `recv` can then be waited on. The `ask` method of an actor reference
-takes a function that is responsible for producing a request with a `reply_to` actor reference. The
-`reply_to` actor reference to the closure is manufactured by `ask` having called a `mailbox_fn`.
-`mailbox_fn` is a function that produces a Tokio channel.
-
-The result of an `ask` is an `AnyMessage` which must then be downcast to arrive at the type we
-seek.
+The `ask` method of an actor reference takes a function that is responsible for producing a request 
+with a `reply_to` actor reference. Asks always take a timeout parameter which, in the case of Tokio,
+may return an `Elapsed` error.
 
 For complete examples, please consult the tests associated with each dispatcher library.
 
