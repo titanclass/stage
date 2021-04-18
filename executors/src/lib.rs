@@ -113,7 +113,8 @@ pub trait Ask<M, M2> {
     /// to construct a message that accepts a reply_to sender.
     /// All asks have a timeout. Note also that if an unexpected
     /// reply is received then a timeout error will be indicated.
-    /// Note that this method will block.
+    /// Note that this method will block due to the lack of
+    /// async/await support: https://github.com/crossbeam-rs/crossbeam/issues/501
     fn ask(&self, request_fn: &dyn Fn(&ActorRef<M2>) -> M, recv_timeout: Duration)
         -> AskResult<M2>;
 }
