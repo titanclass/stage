@@ -16,7 +16,8 @@ has no knowledge of where the actor's execution takes place (current thread, ano
 ## Why Stage?
 
 Stage's core library `stage_core` provides a minimal set of types and traits required
-to sufficiently express an actor model, and no more.
+to sufficiently express an actor model, and no more. The resulting actors should then
+be able to run on [the popular async runtimes](https://rust-lang.github.io/async-book/08_ecosystem/00_chapter.html#popular-async-runtimes) available, including tokio and async-std.
 
 ## Inspiration
 
