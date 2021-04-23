@@ -97,6 +97,22 @@ Actors here build on channels and associate state with the receiver. The type sy
 to enforce actor semantics; in particular, requiring a single receiver so that an actor's
 state can be mutated without contention.
 
+### async/await within an actor
+
+Using async/await (Futures) within an actor's `receive` method would permit calling out to async
+functions of other libraries. However, a danger here is that these async functions may block 
+indefinitely as there is no contractual obligation to ever return (an issue for discussing the
+contractual obligations of async functions has been 
+[https://internals.rust-lang.org/t/future-and-its-assurance-of-completion/14542](raised on the Rust internals forum)).
+Blocking would prevent an actor from processing other messages in its mailbox.
+
+Another argument here is that actors can be considered orthoganal to async/await. Actors make 
+great state machines, and receiving commands, including ones to stop the state machine, should not
+be blocked from processing.
+
+Finally, async functions can call into actors by using the `ActorRef.ask` async method call. 
+Therefore, async functions and actors are able to co-exist and potentially serve distinct use-cases.
+
 ### What about actor supervision?
 
 Actor model libraries often include supervisory functions, although this is not a requirement
