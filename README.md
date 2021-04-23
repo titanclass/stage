@@ -103,7 +103,7 @@ Using async/await (Futures) within an actor's `receive` method would permit call
 functions of other libraries. However, a danger here is that these async functions may block 
 indefinitely as there is no contractual obligation to ever return (an issue for discussing the
 contractual obligations of async functions has been 
-[https://internals.rust-lang.org/t/future-and-its-assurance-of-completion/14542](raised on the Rust internals forum)).
+[raised on the Rust internals forum](https://internals.rust-lang.org/t/future-and-its-assurance-of-completion/14542)).
 Blocking would prevent an actor from processing other messages in its mailbox.
 
 Another argument here is that actors can be considered orthoganal to async/await. Actors make 
