@@ -13,6 +13,9 @@ and create more actors. Actors are guaranteed to only ever receive one message a
 without the concern of locks. Given actor references, location transparency is also attainable where the sender of a message
 has no knowledge of where the actor's execution takes place (current thread, another thread, another core, another machine...).
 
+Actors are particularly good at hosting [Finite State Machines](https://en.wikipedia.org/wiki/Finite-state_machine), particularly
+[event-driven ones](http://christopherhunt-software.blogspot.com/2021/02/event-driven-finite-state-machines.html).
+
 ## Why Stage?
 
 Stage's core library `stage_core` provides a minimal set of types and traits required
