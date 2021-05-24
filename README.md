@@ -51,7 +51,7 @@ impl Actor<Greet> for HelloWorld {
 ```
 
 For Tokio, dispatcher and mailbox setup looks like the following. We use Tokio's preferred bounded channels being 
-set to 100 pending messages (unbounded channels are also available):
+set to 10 pending system messages (unbounded channels are also available):
 
 ```rust
 let (command_tx, command_rx) = channel(10);
@@ -59,7 +59,8 @@ let dispatcher = Arc::new(TokioDispatcher { command_tx });
 ```
 
 Each actor has its own queue of messages, named a "mailbox", and a channel is supplied by a `mailbox_fn` factory function. 
-Again, we can use bounded or unbounded channels:
+Again, we can use bounded or unbounded channels, and we use a bounded one with 100 pending actor-destined messages. This
+bound is generally higher for the actor than the dispatcher as the dispatcher tends to do less.
 
 ```rust
 let mailbox_fn = Arc::new(mailbox_fn(100));
