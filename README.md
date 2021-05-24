@@ -4,7 +4,7 @@
 [![Test](https://github.com/titanclass/stage/actions/workflows/test.yml/badge.svg)](https://github.com/titanclass/stage/actions/workflows/test.yml)
 
 A minimal [actor model](https://en.wikipedia.org/wiki/Actor_model) library targeting `nostd` [Rust](https://www.rust-lang.org/) 
-and designed to run with any executor.
+consisting of just two traits and two types, and designed to run with any executor.
 
 ## Why are actors useful?
 
@@ -30,7 +30,7 @@ We hope that Stage can be composed with other projects to achieve the same goals
 
 ## In a nutshell
 
-The essential types are `Actor`, `ActorRef` and `ActorContext`. Actors need to run on something, and they are dispatched
+The essential traits and types are `Actor`, `ActorRef` and `ActorContext`. Actors need to run on something, and they are dispatched
 to whatever that is via a `Dispatcher`. Other crates such as `stage_dispatch_crossbeam_executors` are available to provide an
 execution environment.
 
@@ -50,7 +50,16 @@ impl Actor<Greet> for HelloWorld {
 }
 ```
 
-Dispatcher and mailbox setup looks like this - we will use the `stage_dispatch_crossbeam_executors` work-stealing pool for 4 processors 
+For Tokio, dispatcher and mailbox setup looks like the following. We use Tokio's preferred bounded channels being 
+set to 100 pending messages (unbounded channels are also available):
+
+```rust
+let (command_tx, command_rx) = channel(100);
+let dispatcher = Arc::new(TokioDispatcher { command_tx });
+let mailbox_fn = Arc::new(mailbox_fn(100));
+```
+
+Alternatively, we can use the `stage_dispatch_crossbeam_executors` work-stealing pool for 4 processors 
 along with an unbounded channel for communicating with it and for each actor:
 
 ```rust
@@ -61,7 +70,7 @@ let dispatcher = Arc::new(WorkStealingPoolDispatcher { pool, command_tx });
 let mailbox_fn = Arc::new(unbounded_mailbox_fn());
 ```
 
-Sending a message to an actor looks like this:
+No matter what dispatcher is used, the rest of the code is the same. Sending a message to an actor looks like this:
 
 ```rust
 let system = ActorContext::<Greet>::new(
