@@ -56,10 +56,16 @@ set to 100 pending messages (unbounded channels are also available):
 ```rust
 let (command_tx, command_rx) = channel(100);
 let dispatcher = Arc::new(TokioDispatcher { command_tx });
+```
+
+Each actor has its own queue of messages, named a "mailbox", and a channel is supplied by a `mailbox_fn` factory function. 
+Again, we can use bounded or unbounded channels:
+
+```rust
 let mailbox_fn = Arc::new(mailbox_fn(100));
 ```
 
-Alternatively, we can use the `stage_dispatch_crossbeam_executors` work-stealing pool for 4 processors 
+As an alternative to Tokio, we can use the `stage_dispatch_crossbeam_executors` work-stealing pool for 4 processors 
 along with an unbounded channel for communicating with it and for each actor:
 
 ```rust
