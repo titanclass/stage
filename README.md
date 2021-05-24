@@ -54,7 +54,7 @@ For Tokio, dispatcher and mailbox setup looks like the following. We use Tokio's
 set to 100 pending messages (unbounded channels are also available):
 
 ```rust
-let (command_tx, command_rx) = channel(100);
+let (command_tx, command_rx) = channel(10);
 let dispatcher = Arc::new(TokioDispatcher { command_tx });
 ```
 
